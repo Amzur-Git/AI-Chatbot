@@ -20,6 +20,29 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
 
+
+def _build_sidebar_items(messages):
+    items = []
+    for index, message in enumerate(messages):
+        if message.role != "user":
+            continue
+
+        assistant_preview = None
+        if index + 1 < len(messages) and messages[index + 1].role == "assistant":
+            assistant_preview = messages[index + 1].content
+
+        items.append(
+            {
+                "id": message.id,
+                "title": message.content[:80],
+                "user_message": message.content,
+                "assistant_preview": assistant_preview,
+                "created_at": message.created_at.isoformat(),
+            }
+        )
+
+    return list(reversed(items))
+
 if DATABASE_AVAILABLE:
     @router.post("/chat", response_model=ChatResponse)
     async def chat(
@@ -107,6 +130,23 @@ if DATABASE_AVAILABLE:
             }
             for msg in messages
         ]
+
+    @router.get("/history/sidebar")
+    async def get_sidebar_history(
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Get compact user-centric history for the left sidebar."""
+        from sqlalchemy import select
+
+        result = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.user_id == current_user.id)
+            .order_by(ChatMessage.created_at)
+        )
+        messages = result.scalars().all()
+
+        return _build_sidebar_items(messages)
 else:
     # Fallback implementation without database
     @router.post("/chat", response_model=ChatResponse)
@@ -152,3 +192,8 @@ else:
     def get_chat_history_fallback():
         """Get chat history (not available without database)"""
         return {"message": "Chat history not available - database not configured"}
+
+    @router.get("/history/sidebar")
+    def get_sidebar_history_fallback():
+        """Get sidebar history (not available without database)"""
+        return {"message": "Sidebar history not available - database not configured"}

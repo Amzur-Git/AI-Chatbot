@@ -23,3 +23,11 @@ export type ChatHistoryItem = {
   content: string;
   created_at: string;
 };
+
+export type ChatSidebarItem = {
+  id: number;
+  title: string;
+  user_message: string;
+  assistant_preview: string | null;
+  created_at: string;
+};

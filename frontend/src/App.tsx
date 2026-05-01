@@ -4,7 +4,7 @@ import { authService } from "./services/auth";
 import { chatService } from "./services/chat";
 import Login from "./components/Login";
 import AuthCallback from "./components/AuthCallback";
-import type { ChatMessage, User } from "./types";
+import type { ChatMessage, ChatSidebarItem, User } from "./types";
 
 function ChatApp() {
   const [input, setInput] = useState("");
@@ -13,6 +13,8 @@ function ChatApp() {
   const [error, setError] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [sidebarHistory, setSidebarHistory] = useState<ChatSidebarItem[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
 
   useEffect(() => {
     const initializeChat = async () => {
@@ -27,6 +29,10 @@ function ChatApp() {
           content: item.content,
           created_at: item.created_at,
         })));
+
+        const sidebarItems = await chatService.getSidebarHistory();
+        setSidebarHistory(sidebarItems);
+        setSelectedHistoryId(sidebarItems[0]?.id ?? null);
       } catch (err) {
         setError("Unable to load your account or chat history. Please login again.");
       } finally {
@@ -51,6 +57,10 @@ function ChatApp() {
       const data = await chatService.sendMessage(userMessage.content);
       const assistantMessage: ChatMessage = { role: "assistant", content: data.answer };
       setMessages((prev) => [...prev, assistantMessage]);
+
+      const updatedSidebar = await chatService.getSidebarHistory();
+      setSidebarHistory(updatedSidebar);
+      setSelectedHistoryId(updatedSidebar[0]?.id ?? null);
     } catch (err) {
       setError("Unable to send message. Please try again.");
       // Remove the user message if sending failed
@@ -64,7 +74,15 @@ function ChatApp() {
     authService.logout();
     setUser(null);
     setMessages([]);
+    setSidebarHistory([]);
+    setSelectedHistoryId(null);
     window.location.href = '/login';
+  };
+
+  const handleHistorySelect = (historyItemId: number) => {
+    setSelectedHistoryId(historyItemId);
+    const target = document.getElementById(`chat-message-${historyItemId}`);
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   if (loadingHistory) {
@@ -80,7 +98,7 @@ function ChatApp() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-3xl p-8">
+      <div className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8">
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-3xl font-bold">Gemini Chatbot</h1>
           <div className="flex items-center gap-4">
@@ -99,45 +117,78 @@ function ChatApp() {
         </div>
         <p className="mt-2 text-slate-600">Ask the model a question and receive an answer from the backend.</p>
 
-        <div className="mt-8 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="space-y-4">
-            {messages.length === 0 && (
-              <div className="text-center text-slate-500 py-8">
-                <p>No messages yet. Start a conversation!</p>
+        <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
+          <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:h-[70vh] lg:overflow-y-auto">
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Your History</h2>
+            {sidebarHistory.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">No chat history yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {sidebarHistory.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleHistorySelect(item.id)}
+                    className={`w-full rounded-2xl border p-3 text-left transition ${
+                      selectedHistoryId === item.id
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
+                    }`}
+                  >
+                    <p className="truncate text-sm font-medium">{item.title}</p>
+                    <p className={`mt-2 text-xs ${selectedHistoryId === item.id ? "text-slate-200" : "text-slate-500"}`}>
+                      {new Date(item.created_at).toLocaleString()}
+                    </p>
+                  </button>
+                ))}
               </div>
             )}
-            {messages.map((message, index) => (
-              <div key={message.id || index} className={message.role === "user" ? "text-right" : "text-left"}>
-                <div className="inline-block rounded-2xl px-4 py-3 text-sm shadow-sm" style={{ backgroundColor: message.role === "user" ? "#2563eb" : "#f8fafc", color: message.role === "user" ? "white" : "#0f172a" }}>
-                  {message.content}
+          </aside>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm lg:h-[70vh] lg:overflow-y-auto">
+            <div className="space-y-4">
+              {messages.length === 0 && (
+                <div className="text-center text-slate-500 py-8">
+                  <p>No messages yet. Start a conversation!</p>
                 </div>
-                {message.created_at && (
-                  <div className="text-xs text-slate-400 mt-1">
-                    {new Date(message.created_at).toLocaleString()}
+              )}
+              {messages.map((message, index) => (
+                <div
+                  key={message.id || index}
+                  id={message.id ? `chat-message-${message.id}` : undefined}
+                  className={message.role === "user" ? "text-right" : "text-left"}
+                >
+                  <div className="inline-block max-w-[90%] rounded-2xl px-4 py-3 text-sm shadow-sm" style={{ backgroundColor: message.role === "user" ? "#2563eb" : "#f8fafc", color: message.role === "user" ? "white" : "#0f172a" }}>
+                    {message.content}
                   </div>
-                )}
-              </div>
-            ))}
+                  {message.created_at && (
+                    <div className="text-xs text-slate-400 mt-1">
+                      {new Date(message.created_at).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <form className="mt-6 flex gap-3" onSubmit={handleSubmit}>
+              <input
+                className="flex-1 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-slate-500 focus:outline-none"
+                placeholder="Type your question..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                disabled={loading}
+              />
+              <button
+                type="submit"
+                className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+                disabled={loading}
+              >
+                {loading ? "Sending..." : "Send"}
+              </button>
+            </form>
+
+            {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
           </div>
-
-          <form className="mt-6 flex gap-3" onSubmit={handleSubmit}>
-            <input
-              className="flex-1 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-slate-500 focus:outline-none"
-              placeholder="Type your question..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-              disabled={loading}
-            >
-              {loading ? "Sending..." : "Send"}
-            </button>
-          </form>
-
-          {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
         </div>
       </div>
     </div>

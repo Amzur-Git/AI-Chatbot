@@ -1,5 +1,5 @@
 import api from './api';
-import type { ChatHistoryItem } from '../types';
+import type { ChatHistoryItem, ChatSidebarItem } from '../types';
 
 export const chatService = {
   async sendMessage(message: string): Promise<{ answer: string }> {
@@ -9,6 +9,11 @@ export const chatService = {
 
   async getChatHistory(): Promise<ChatHistoryItem[]> {
     const response = await api.get('/api/history');
+    return response.data;
+  },
+
+  async getSidebarHistory(): Promise<ChatSidebarItem[]> {
+    const response = await api.get('/api/history/sidebar');
     return response.data;
   },
 };
