@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environment files
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+
+# Local data stores
+chroma_db/
+
+# VS Code
+.vscode/
