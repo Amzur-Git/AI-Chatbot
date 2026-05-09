@@ -1,3 +1,9 @@
+param(
+    [switch]$Reload,
+    [string]$BindHost = '127.0.0.1',
+    [int]$Port = 8000
+)
+
 $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -10,5 +16,14 @@ if (-not (Test-Path .venv)) {
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-Write-Host "Starting backend on http://localhost:8000"
-& .\.venv\Scripts\uvicorn.exe app.main:app --reload --host 0.0.0.0 --port 8000
+$uvicornArgs = @('-m', 'uvicorn', 'app.main:app', '--host', $BindHost, '--port', "$Port")
+if ($Reload) {
+    $uvicornArgs += '--reload'
+}
+
+Write-Host "Starting backend on http://$BindHost`:$Port"
+if ($Reload) {
+    Write-Host 'Reload mode enabled.'
+}
+
+& .\.venv\Scripts\python.exe @uvicornArgs

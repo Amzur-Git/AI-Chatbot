@@ -1,8 +1,25 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: '/',
+  baseURL: 'http://localhost:8000',
+  timeout: 60000,
 });
+
+function getOrCreateSessionId(): string {
+  const key = 'chat_session_id';
+  const existing = sessionStorage.getItem(key);
+  if (existing) {
+    return existing;
+  }
+
+  const generated =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  sessionStorage.setItem(key, generated);
+  return generated;
+}
 
 // Add request interceptor to include auth token
 api.interceptors.request.use((config) => {
@@ -10,6 +27,8 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
+  config.headers['X-Session-Id'] = getOrCreateSessionId();
   return config;
 });
 

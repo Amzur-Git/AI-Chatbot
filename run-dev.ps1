@@ -1,3 +1,7 @@
+param(
+    [switch]$Reload
+)
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -47,18 +51,24 @@ if (-not (Test-Path 'node_modules')) {
 }
 Pop-Location
 
-$backendCommand = "cd `"$backendDir`"; & `"$backendDir\.venv\Scripts\uvicorn.exe`" app.main:app --reload --host 0.0.0.0 --port 8000"
+$backendCommand = "cd `"$backendDir`"; & `"$backendDir\.venv\Scripts\python.exe`" -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+$backendLabel = 'standard mode'
+if ($Reload) {
+    $backendCommand = "$backendCommand --reload"
+    $backendLabel = 'reload mode'
+}
 $frontendCommand = "cd `"$frontendDir`"; npm run dev"
 
 Write-Host 'Starting backend and frontend servers...'
 Write-Host 'Backend: http://localhost:8000'
 Write-Host 'Frontend: http://localhost:5174'
 Write-Host 'Login: http://localhost:5174/login'
+Write-Host "Backend launch mode: $backendLabel"
 Write-Host ''
 Write-Host 'Press Ctrl+C to stop both servers'
 
-$backendProcess = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile', '-NoExit', '-Command', $backendCommand -NoNewWindow -PassThru
-$frontendProcess = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile', '-NoExit', '-Command', $frontendCommand -NoNewWindow -PassThru
+$backendProcess = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile', '-NoExit', '-Command', $backendCommand -PassThru
+$frontendProcess = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile', '-NoExit', '-Command', $frontendCommand -PassThru
 
 Write-Host 'Backend process ID:' $backendProcess.Id
 Write-Host 'Frontend process ID:' $frontendProcess.Id

@@ -22,3 +22,14 @@ chroma_db/
 
 # VS Code
 .vscode/
+
+# Logs
+*.log
+*.stderr.log
+*.stdout.log
+
+# User uploads
+backend/uploads/
+
+# QA assets
+qa_assets/
