@@ -46,6 +46,11 @@ _RELATIONSHIP_HINTS = (
     "users.id -> image_generations.user_id"
 )
 
+_METADATA_ALLOWED_TABLES = {
+    ("information_schema", "columns"),
+    ("information_schema", "tables"),
+}
+
 
 def _parse_allowed_schemas() -> set[str]:
     values = [item.strip().lower() for item in (settings.db_chat_allowed_schemas or "").split(",") if item.strip()]
@@ -60,6 +65,90 @@ def _parse_allowed_tables() -> set[str]:
 def _contains_sensitive_token(text_value: str) -> bool:
     normalized = (text_value or "").lower()
     return any(token in normalized for token in _SENSITIVE_COLUMN_TOKENS)
+
+
+def _table_alias_map() -> dict[str, str]:
+    allowed_tables = _parse_allowed_tables()
+    aliases: dict[str, str] = {}
+    for table_name in allowed_tables:
+        cleaned = table_name.strip().lower()
+        if not cleaned:
+            continue
+
+        compact = cleaned.replace("_", "")
+        aliases[cleaned] = cleaned
+        aliases[compact] = cleaned
+
+        if cleaned.endswith("s") and len(cleaned) > 1:
+            singular = cleaned[:-1]
+            aliases[singular] = cleaned
+            aliases[singular.replace("_", "")] = cleaned
+
+    return aliases
+
+
+def _guess_table_name_from_question(question: str) -> str | None:
+    q = (question or "").strip().lower()
+    if not q:
+        return None
+
+    aliases = _table_alias_map()
+    if not aliases:
+        return None
+
+    compact_q = re.sub(r"[^a-z0-9_]", "", q)
+    for alias, mapped in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        normalized_alias = alias.replace("_", "")
+        if normalized_alias and normalized_alias in compact_q:
+            return mapped
+
+    return None
+
+
+def _metadata_sql_from_question(question: str) -> str | None:
+    q = (question or "").strip().lower()
+    if not q:
+        return None
+
+    table_name = _guess_table_name_from_question(q)
+
+    # Table list/count questions.
+    if "table" in q and not table_name:
+        if re.search(r"\b(how many|count|number of)\b", q):
+            return (
+                "SELECT COUNT(*) AS table_count "
+                "FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+            )
+        if re.search(r"\b(list|show|what|which)\b", q):
+            return (
+                "SELECT table_name "
+                "FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' "
+                "ORDER BY table_name"
+            )
+
+    if not table_name:
+        return None
+
+    # Column count/list questions for a specific table.
+    if "column" in q:
+        if re.search(r"\b(how many|count|number of)\b", q):
+            return (
+                "SELECT COUNT(*) AS column_count "
+                "FROM information_schema.columns "
+                f"WHERE table_schema = 'public' AND table_name = '{table_name}'"
+            )
+
+        if re.search(r"\b(list|show|what|which|all)\b", q):
+            return (
+                "SELECT column_name, data_type "
+                "FROM information_schema.columns "
+                f"WHERE table_schema = 'public' AND table_name = '{table_name}' "
+                "ORDER BY ordinal_position"
+            )
+
+    return None
 
 
 def _clean_json_payload(raw: str) -> dict[str, Any] | None:
@@ -197,10 +286,11 @@ def _is_sql_allowed_by_allowlist(sql: str) -> bool:
         return False
 
     for schema_name, table_name in referenced:
-        if schema_name not in allowed_schemas:
-            return False
-        if allowed_tables and table_name not in allowed_tables:
-            return False
+        if schema_name in allowed_schemas and (not allowed_tables or table_name in allowed_tables):
+            continue
+        if (schema_name, table_name) in _METADATA_ALLOWED_TABLES:
+            continue
+        return False
     return True
 
 
@@ -246,6 +336,14 @@ async def try_database_chat_answer(
     if not user_question:
         return None
 
+    metadata_sql = _metadata_sql_from_question(user_question)
+    if metadata_sql:
+        sql = _ensure_safe_limit(metadata_sql, max_limit=100)
+        query_result = await db.execute(text(sql))
+        mapped_rows = [dict(row) for row in query_result.mappings().all()]
+        table = _format_rows_as_markdown(mapped_rows, max_rows=settings.db_chat_max_rows)
+        return f"[Database Chat]\nHere is the database result for your question.\n\nSQL Used:\n```sql\n{sql}\n```\n\nResult:\n{table}"
+
     schema_summary = await _build_schema_summary(db)
 
     planner_prompt = (
@@ -254,6 +352,7 @@ async def try_database_chat_answer(
         "Return strict JSON only with keys: use_database (boolean), sql (string), rationale (string). "
         "Rules: generate read-only SQL only (SELECT/CTE). Never use INSERT/UPDATE/DELETE/DDL. "
         "Use JOINs automatically when needed. "
+        "Handle metadata questions too (e.g., list tables, count columns in a table). "
         "Never select password_hash or any secret/token/api key columns. "
         "For large/non-aggregate result sets, include LIMIT 100. "
         "If question is not database-related, return use_database=false and sql=''."
