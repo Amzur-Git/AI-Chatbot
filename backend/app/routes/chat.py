@@ -52,7 +52,7 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: int | None = None  # Optional thread ID for grouping conversations
     attachments: list[ChatAttachmentPayload] = []
-    mode: Literal["normal", "rag"] = "normal"
+    mode: Literal["normal", "rag", "db"] = "normal"
     rag_attachment_ids: list[int] = []
     reset_history: bool = False
 
@@ -109,7 +109,7 @@ def _strip_mode_metadata(text: str) -> str:
 
 def _filter_context_messages_for_mode(messages: list[dict[str, str]], mode: str) -> list[dict[str, str]]:
     """Keep mode-specific context isolated so Normal mode cannot consume RAG answers."""
-    if mode == "normal":
+    if mode in {"normal", "db"}:
         filtered: list[dict[str, str]] = []
         for message in messages:
             role = str(message.get("role") or "")
@@ -434,7 +434,7 @@ if DATABASE_AVAILABLE:
                 model_name = settings.gemini_model_name
 
             # Database chat: convert natural language to SQL and answer from Supabase when applicable.
-            if request.mode == "normal":
+            if request.mode in {"normal", "db"}:
                 db_answer = await try_database_chat_answer(
                     question=stored_user_message,
                     db=db,
@@ -442,7 +442,25 @@ if DATABASE_AVAILABLE:
                     model_name=model_name,
                 )
                 if db_answer:
-                    answer = f"[Normal mode]\n{db_answer}"
+                    prefix = "[DB mode]" if request.mode == "db" else "[Normal mode]"
+                    answer = f"{prefix}\n{db_answer}"
+                    assistant_message = ChatMessage(
+                        user_id=current_user.id,
+                        thread_id=request.thread_id,
+                        role="assistant",
+                        content=answer,
+                    )
+                    db.add(assistant_message)
+                    await db.commit()
+                    return ChatResponse(answer=answer)
+
+                if request.mode == "db":
+                    answer = (
+                        "[DB mode]\n"
+                        "I could not generate a safe database query for that request. "
+                        "Please ask a data question using tables like users, chat_messages, attachments, "
+                        "image_generations, or user_credentials."
+                    )
                     assistant_message = ChatMessage(
                         user_id=current_user.id,
                         thread_id=request.thread_id,
@@ -466,7 +484,11 @@ if DATABASE_AVAILABLE:
                 "If snippets are missing, say that indexed context was not found. "
                 "End your answer with a short 'Sources:' line listing source names when available."
                 if request.mode == "rag"
-                else "Mode=NORMAL. Do not claim you used retrieved snippets or indexed document context."
+                else (
+                    "Mode=DB. If this is not a database question, ask the user to switch mode."
+                    if request.mode == "db"
+                    else "Mode=NORMAL. Do not claim you used retrieved snippets or indexed document context."
+                )
             )
 
             response = client.chat.completions.create(
@@ -509,8 +531,10 @@ if DATABASE_AVAILABLE:
                     answer = f"[RAG mode | chunks: {len(rag_chunks)}]\n{answer}\n\nSources: {sources_line}"
                 else:
                     answer = f"[RAG mode | chunks: 0]\n{answer}\n\nSources: none (no indexed chunks matched this query)."
-            else:
+            elif request.mode == "normal":
                 answer = f"[Normal mode]\n{answer}"
+            else:
+                answer = f"[DB mode]\n{answer}"
 
             # Store assistant message with thread_id
             assistant_message = ChatMessage(

@@ -40,7 +40,7 @@ export type ChatAttachmentPayload = {
   text_content?: string;
 };
 
-export type ChatMode = "normal" | "rag";
+export type ChatMode = "normal" | "rag" | "db";
 
 export type UploadAttachmentResponse = {
   id: number;

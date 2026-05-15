@@ -24,7 +24,10 @@ const CHAT_MODE_STORAGE_KEY = "chat.mode.current";
 const CHAT_DEFAULT_MODE_STORAGE_KEY = "chat.mode.default";
 
 function normalizeMode(value: string | null | undefined): ChatMode {
-  return value === "rag" ? "rag" : "normal";
+  if (value === "rag" || value === "db") {
+    return value;
+  }
+  return "normal";
 }
 
 function extractImagePrompt(content: string): string {
@@ -584,9 +587,11 @@ function ChatApp() {
     setAttachmentHint(
       nextMode === "rag"
         ? "RAG mode enabled. Upload/select a document before asking document questions."
-        : "Normal mode enabled. Document context is cleared."
+        : nextMode === "db"
+          ? "DB Query mode enabled. Ask questions about Supabase tables and records."
+          : "Normal mode enabled. Document context is cleared."
     );
-    if (nextMode === "normal") {
+    if (nextMode !== "rag") {
       // One-shot reset for backend prompt history on next send.
       setResetHistoryOnNextSend(true);
     }
@@ -650,6 +655,50 @@ function ChatApp() {
                 void loadRagDebug();
               }}
             />
+            <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Chat Mode</h2>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleModeSwitch("normal");
+                  }}
+                  className={`rounded-xl border px-2 py-2 text-xs font-semibold transition ${
+                    chatMode === "normal"
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  Normal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleModeSwitch("rag");
+                  }}
+                  className={`rounded-xl border px-2 py-2 text-xs font-semibold transition ${
+                    chatMode === "rag"
+                      ? "border-blue-600 bg-blue-600 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  RAG
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleModeSwitch("db");
+                  }}
+                  className={`rounded-xl border px-2 py-2 text-xs font-semibold transition ${
+                    chatMode === "db"
+                      ? "border-emerald-600 bg-emerald-600 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  DB Query
+                </button>
+              </div>
+            </div>
             <button
               onClick={handleNewChat}
               className="w-full mb-4 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 transition flex items-center justify-center gap-2"
@@ -719,10 +768,14 @@ function ChatApp() {
                       <div className="mb-2">
                         <span
                           className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                            message.mode_used === "rag" ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-700"
+                            message.mode_used === "rag"
+                              ? "bg-blue-100 text-blue-700"
+                              : message.mode_used === "db"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-200 text-slate-700"
                           }`}
                         >
-                          {message.mode_used === "rag" ? "RAG" : "Normal"}
+                          {message.mode_used === "rag" ? "RAG" : message.mode_used === "db" ? "DB" : "Normal"}
                         </span>
                       </div>
                     ) : null}
@@ -771,35 +824,15 @@ function ChatApp() {
                 />
 
                 <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void handleModeSwitch(chatMode === "rag" ? "normal" : "rag");
-                    }}
-                    disabled={loading || imageGenerating}
-                    className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                      chatMode === "rag"
-                        ? "border-blue-600 bg-blue-50 text-blue-700"
-                        : "border-slate-300 bg-white text-slate-700"
-                    }`}
-                    aria-pressed={chatMode === "rag"}
-                  >
-                    <span>RAG Search</span>
-                    <span
-                      className={`relative inline-flex h-5 w-10 items-center rounded-full transition ${
-                        chatMode === "rag" ? "bg-blue-600" : "bg-slate-300"
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                          chatMode === "rag" ? "translate-x-5" : "translate-x-1"
-                        }`}
-                      />
-                    </span>
-                  </button>
                   <input
                     className="flex-1 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-slate-500 focus:outline-none"
-                    placeholder={chatMode === "rag" ? "Ask using your indexed documents..." : "Type your question..."}
+                    placeholder={
+                      chatMode === "rag"
+                        ? "Ask using your indexed documents..."
+                        : chatMode === "db"
+                          ? "Ask about your Supabase data (e.g., users, chats, attachments)..."
+                          : "Type your question..."
+                    }
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     disabled={loading || imageGenerating}
@@ -839,7 +872,7 @@ function ChatApp() {
               </p>
             ) : null}
             <p className="mt-1 text-xs text-slate-500">
-              Chat mode: {chatMode === "rag" ? "RAG (uses indexed chunks)" : "Normal"}
+              Chat mode: {chatMode === "rag" ? "RAG (uses indexed chunks)" : chatMode === "db" ? "DB Query (Supabase)" : "Normal"}
             </p>
             {chatMode === "rag" ? (
               <p className="mt-1 text-xs text-slate-500">
@@ -847,16 +880,18 @@ function ChatApp() {
               </p>
             ) : null}
             <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600">
-              <input
-                type="checkbox"
-                checked={defaultChatMode === "rag"}
+              Default mode:
+              <select
+                value={defaultChatMode}
                 onChange={(event) => {
-                  const nextDefault: ChatMode = event.target.checked ? "rag" : "normal";
-                  setDefaultChatMode(nextDefault);
+                  setDefaultChatMode(normalizeMode(event.target.value));
                 }}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-              Use RAG as default mode
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"
+              >
+                <option value="normal">Normal</option>
+                <option value="rag">RAG</option>
+                <option value="db">DB Query</option>
+              </select>
             </label>
           </div>
         </div>

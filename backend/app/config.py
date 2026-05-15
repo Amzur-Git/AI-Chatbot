@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = 200
     rag_top_k: int = 4
     rag_similarity_distance_threshold: float = 1.2
-    db_chat_max_rows: int = 50
+    db_chat_max_rows: int = 100
     db_chat_schema_max_tables: int = 40
     db_chat_schema_max_columns_per_table: int = 25
     db_chat_allowed_schemas: str = "public"

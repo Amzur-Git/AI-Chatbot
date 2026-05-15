@@ -30,6 +30,22 @@ _BLOCKED_SQL_KEYWORDS = {
     "merge",
 }
 
+_SENSITIVE_COLUMN_TOKENS = {
+    "password",
+    "password_hash",
+    "secret",
+    "token",
+    "api_key",
+    "private_key",
+    "credential",
+}
+
+_RELATIONSHIP_HINTS = (
+    "users.id -> chat_messages.user_id, "
+    "users.id -> attachments.user_id, "
+    "users.id -> image_generations.user_id"
+)
+
 
 def _parse_allowed_schemas() -> set[str]:
     values = [item.strip().lower() for item in (settings.db_chat_allowed_schemas or "").split(",") if item.strip()]
@@ -39,6 +55,11 @@ def _parse_allowed_schemas() -> set[str]:
 def _parse_allowed_tables() -> set[str]:
     values = [item.strip().lower() for item in (settings.db_chat_allowed_tables or "").split(",") if item.strip()]
     return set(values)
+
+
+def _contains_sensitive_token(text_value: str) -> bool:
+    normalized = (text_value or "").lower()
+    return any(token in normalized for token in _SENSITIVE_COLUMN_TOKENS)
 
 
 def _clean_json_payload(raw: str) -> dict[str, Any] | None:
@@ -108,6 +129,7 @@ def _format_rows_as_markdown(rows: list[dict[str, Any]], max_rows: int) -> str:
 
 async def _build_schema_summary(db: AsyncSession) -> str:
     allowed_schemas = _parse_allowed_schemas()
+    allowed_tables = _parse_allowed_tables()
 
     result = await db.execute(
         text(
@@ -126,8 +148,16 @@ async def _build_schema_summary(db: AsyncSession) -> str:
 
     grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
     for item in rows:
-        key = (str(item["table_schema"]), str(item["table_name"]))
-        grouped[key].append(f"{item['column_name']} ({item['data_type']})")
+        schema_name = str(item["table_schema"]).lower()
+        table_name = str(item["table_name"]).lower()
+        column_name = str(item["column_name"])
+        if allowed_tables and table_name not in allowed_tables:
+            continue
+        if _contains_sensitive_token(column_name):
+            continue
+
+        key = (schema_name, table_name)
+        grouped[key].append(f"{column_name} ({item['data_type']})")
 
     lines: list[str] = []
     table_items = sorted(grouped.items())[: settings.db_chat_schema_max_tables]
@@ -174,6 +204,37 @@ def _is_sql_allowed_by_allowlist(sql: str) -> bool:
     return True
 
 
+def _references_sensitive_columns(sql: str) -> bool:
+    # Conservative guard: block if SQL references obvious secret-like tokens.
+    return _contains_sensitive_token(sql)
+
+
+def _ensure_safe_limit(sql: str, max_limit: int = 100) -> str:
+    normalized = (sql or "").strip().rstrip(";")
+    if not normalized:
+        return normalized
+
+    limit_match = re.search(r"\blimit\s+(\d+)\b", normalized, re.IGNORECASE)
+    if not limit_match:
+        return f"{normalized} LIMIT {max_limit}"
+
+    try:
+        current_limit = int(limit_match.group(1))
+    except ValueError:
+        return f"{normalized} LIMIT {max_limit}"
+
+    if current_limit <= max_limit:
+        return normalized
+
+    return re.sub(
+        r"\blimit\s+\d+\b",
+        f"LIMIT {max_limit}",
+        normalized,
+        flags=re.IGNORECASE,
+        count=1,
+    )
+
+
 async def try_database_chat_answer(
     *,
     question: str,
@@ -188,10 +249,13 @@ async def try_database_chat_answer(
     schema_summary = await _build_schema_summary(db)
 
     planner_prompt = (
-        "You are a SQL planner for PostgreSQL. Decide if the user question should be answered by querying the database. "
+        "You are an AI Database Assistant SQL planner for PostgreSQL. "
+        "Decide if the user question should be answered by querying the database. "
         "Return strict JSON only with keys: use_database (boolean), sql (string), rationale (string). "
         "Rules: generate read-only SQL only (SELECT/CTE). Never use INSERT/UPDATE/DELETE/DDL. "
-        "Prefer explicit table names and include LIMIT 50 unless aggregation naturally returns one row. "
+        "Use JOINs automatically when needed. "
+        "Never select password_hash or any secret/token/api key columns. "
+        "For large/non-aggregate result sets, include LIMIT 100. "
         "If question is not database-related, return use_database=false and sql=''."
     )
 
@@ -200,6 +264,7 @@ async def try_database_chat_answer(
         messages=[
             {"role": "system", "content": planner_prompt},
             {"role": "system", "content": f"Database schema:\n{schema_summary}"},
+            {"role": "system", "content": f"Known relationships:\n{_RELATIONSHIP_HINTS}"},
             {"role": "user", "content": user_question},
         ],
         temperature=0.0,
@@ -214,6 +279,10 @@ async def try_database_chat_answer(
     sql = str(plan.get("sql") or "").strip()
     if not _is_read_only_sql(sql):
         return "I can only run safe read-only SQL queries. Please rephrase your question."
+    if _references_sensitive_columns(sql):
+        return "I can't access password or secret fields. Please ask for non-sensitive data."
+
+    sql = _ensure_safe_limit(sql, max_limit=100)
     if not _is_sql_allowed_by_allowlist(sql):
         return "This query targets tables outside the allowed database scope."
 
@@ -222,7 +291,7 @@ async def try_database_chat_answer(
     table = _format_rows_as_markdown(mapped_rows, max_rows=settings.db_chat_max_rows)
 
     answer_prompt = (
-        "You are a helpful data analyst. Explain SQL result succinctly and clearly. "
+        "You are a helpful data analyst. Explain SQL result in simple English. "
         "Use only the provided SQL output. If no rows, say no matching data was found."
     )
 
