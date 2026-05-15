@@ -202,15 +202,14 @@ def _format_rows_as_markdown(rows: list[dict[str, Any]], max_rows: int) -> str:
         return "No rows matched your query."
 
     limited_rows = rows[:max_rows]
-    columns = list(limited_rows[0].keys())
-
-    header = "| " + " | ".join(columns) + " |"
-    divider = "| " + " | ".join(["---"] * len(columns)) + " |"
     body_lines: list[str] = []
-    for row in limited_rows:
-        body_lines.append("| " + " | ".join(_serialize_cell(row.get(col)) for col in columns) + " |")
+    for index, row in enumerate(limited_rows, start=1):
+        body_lines.append(f"Row {index}:")
+        for key, value in row.items():
+            body_lines.append(f"- {key}: {_serialize_cell(value)}")
+        body_lines.append("")
 
-    output = "\n".join([header, divider, *body_lines])
+    output = "\n".join(body_lines).strip()
     if len(rows) > max_rows:
         output += f"\n\nShowing first {max_rows} rows out of {len(rows)} total rows."
     return output
