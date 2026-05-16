@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { BrowserRouter as Router, Navigate, Route, Routes } from "react-router-dom";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { BrowserRouter as Router, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import type { AxiosError } from "axios";
 import AttachmentComposer from "./components/AttachmentComposer";
 import AuthCallback from "./components/AuthCallback";
@@ -7,11 +7,22 @@ import GeneratedImageCard from "./components/GeneratedImageCard";
 import ImageGenerationError from "./components/ImageGenerationError";
 import ImageGenerationLoading from "./components/ImageGenerationLoading";
 import Login from "./components/Login";
+import ResearchDigest from "./pages/ResearchDigest";
+import TicTacToe from "./pages/TicTacToe";
 import MessageContent from "./components/MessageContent";
 import RagDebugPanel from "./components/RagDebugPanel";
 import { authService } from "./services/auth";
 import { chatService } from "./services/chat";
-import type { AttachmentPreview, ChatMessage, ChatMode, ChatSidebarItem, RagDebugResponse, User } from "./types";
+import { dataQueryService } from "./services/dataQuery";
+import type {
+  AttachmentPreview,
+  ChatMessage,
+  ChatMode,
+  ChatSidebarItem,
+  DataQueryDatasetResponse,
+  RagDebugResponse,
+  User,
+} from "./types";
 import {
   buildAttachmentPreview,
   MAX_ATTACHMENTS_PER_MESSAGE,
@@ -22,6 +33,8 @@ import {
 const IMAGE_PROMPT_PREFIX = "Generated image for:";
 const CHAT_MODE_STORAGE_KEY = "chat.mode.current";
 const CHAT_DEFAULT_MODE_STORAGE_KEY = "chat.mode.default";
+type SpreadsheetSource = "excel_csv" | "google_sheets";
+type SpreadsheetMode = "existing_chat" | "nl_sql" | "dataframe";
 
 function normalizeMode(value: string | null | undefined): ChatMode {
   if (value === "rag" || value === "db") {
@@ -38,7 +51,26 @@ function extractImagePrompt(content: string): string {
   return firstLine.replace(IMAGE_PROMPT_PREFIX, "").trim();
 }
 
+function formatSpreadsheetRequestError(error: unknown, fallbackMessage: string): string {
+  const axiosErr = error as AxiosError<{ detail?: string }>;
+  const backendDetail = axiosErr.response?.data?.detail;
+  const rawMessage = axiosErr.message || "";
+
+  if (axiosErr.code === "ECONNABORTED" || rawMessage.toLowerCase().includes("timeout")) {
+    return "Request timed out. The sheet service took too long. Please retry with a smaller sheet or a shorter question.";
+  }
+
+  if (axiosErr.code === "ERR_NETWORK") {
+    return "Cannot reach the sheet service. Start it on http://localhost:8001 and try again.";
+  }
+
+  return backendDetail || rawMessage || fallbackMessage;
+}
+
 function ChatApp() {
+  type SidebarView = "chat" | "spreadsheet";
+
+  const navigate = useNavigate();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -71,7 +103,25 @@ function ChatApp() {
   );
   const [ragSelectedAttachmentIds, setRagSelectedAttachmentIds] = useState<number[]>([]);
   const [resetHistoryOnNextSend, setResetHistoryOnNextSend] = useState(false);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("chat");
+  const [spreadsheetSource, setSpreadsheetSource] = useState<SpreadsheetSource>("google_sheets");
+  const [spreadsheetMode, setSpreadsheetMode] = useState<SpreadsheetMode>("dataframe");
+  const [spreadsheetUrl, setSpreadsheetUrl] = useState("");
+  const [spreadsheetQuestion, setSpreadsheetQuestion] = useState("");
+  const [spreadsheetLoading, setSpreadsheetLoading] = useState(false);
+  const [spreadsheetSessionId, setSpreadsheetSessionId] = useState<string | null>(null);
+  const [spreadsheetFileDataset, setSpreadsheetFileDataset] = useState<DataQueryDatasetResponse | null>(null);
+  const [spreadsheetGoogleDataset, setSpreadsheetGoogleDataset] = useState<DataQueryDatasetResponse | null>(null);
+  const [spreadsheetGoogleSourceUrl, setSpreadsheetGoogleSourceUrl] = useState("");
+  const [spreadsheetFileName, setSpreadsheetFileName] = useState<string | null>(null);
+  const [spreadsheetSelectedSheet, setSpreadsheetSelectedSheet] = useState("");
+  const [spreadsheetUploadMessage, setSpreadsheetUploadMessage] = useState<string | null>(null);
+  const [spreadsheetAnswer, setSpreadsheetAnswer] = useState<string | null>(null);
+  const [spreadsheetPandasCode, setSpreadsheetPandasCode] = useState<string | null>(null);
+  const spreadsheetFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageGenerationLockRef = useRef(false);
+
+  const activeSpreadsheetDataset = spreadsheetSource === "excel_csv" ? spreadsheetFileDataset : spreadsheetGoogleDataset;
 
   useEffect(() => {
     localStorage.setItem(CHAT_MODE_STORAGE_KEY, chatMode);
@@ -617,6 +667,108 @@ function ChatApp() {
     }
   };
 
+  const handleSpreadsheetQuery = async () => {
+    const question = spreadsheetQuestion.trim();
+    if (!question) {
+      setError("Enter a spreadsheet question.");
+      return;
+    }
+    if (spreadsheetSource === "excel_csv" && !spreadsheetFileDataset) {
+      setError("Upload a CSV or XLSX file first.");
+      return;
+    }
+    if (spreadsheetSource === "google_sheets" && !spreadsheetUrl.trim()) {
+      setError("Enter Google Sheets URL.");
+      return;
+    }
+
+    setError(null);
+    setSpreadsheetAnswer(null);
+    setSpreadsheetPandasCode(null);
+    setSpreadsheetLoading(true);
+
+    try {
+      let dataset = activeSpreadsheetDataset;
+      let sessionId = spreadsheetSessionId ?? undefined;
+
+      if (spreadsheetSource === "google_sheets") {
+        const normalizedUrl = spreadsheetUrl.trim();
+        if (!dataset || spreadsheetGoogleSourceUrl !== normalizedUrl) {
+          const loadedDataset = await dataQueryService.loadGoogleSheet(normalizedUrl, sessionId);
+          dataset = loadedDataset;
+          sessionId = loadedDataset.session_id;
+          setSpreadsheetSessionId(loadedDataset.session_id);
+          setSpreadsheetGoogleDataset(loadedDataset);
+          setSpreadsheetGoogleSourceUrl(normalizedUrl);
+          setSpreadsheetSelectedSheet(loadedDataset.sheets[0] || "");
+          setSpreadsheetUploadMessage(`Loaded Google Sheet: ${loadedDataset.source_name}`);
+        }
+      }
+
+      if (!dataset) {
+        throw new Error("No spreadsheet dataset is loaded.");
+      }
+
+      const sheetName =
+        spreadsheetSelectedSheet && dataset.sheets.includes(spreadsheetSelectedSheet)
+          ? spreadsheetSelectedSheet
+          : (dataset.sheets[0] ?? undefined);
+
+      if (sheetName && sheetName !== spreadsheetSelectedSheet) {
+        setSpreadsheetSelectedSheet(sheetName);
+      }
+
+      const answer = await dataQueryService.askQuestion({
+        sessionId: sessionId ?? dataset.session_id,
+        datasetId: dataset.dataset_id,
+        sheetName,
+        question,
+        includePandasCode: spreadsheetMode === "dataframe",
+      });
+
+      setSpreadsheetSessionId(answer.session_id);
+      setSpreadsheetAnswer(answer.answer);
+      setSpreadsheetPandasCode(answer.pandas_code ?? null);
+    } catch (err) {
+      setError(formatSpreadsheetRequestError(err, "Failed to run spreadsheet query."));
+    } finally {
+      setSpreadsheetLoading(false);
+    }
+  };
+
+  const handleSpreadsheetFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!["csv", "xlsx", "xls"].includes(extension)) {
+      setError("Only CSV and XLSX files are supported in Spreadsheet mode.");
+      return;
+    }
+
+    setError(null);
+    setSpreadsheetUploadMessage("Uploading file...");
+    setSpreadsheetAnswer(null);
+    setSpreadsheetPandasCode(null);
+    try {
+      const uploadResult = await dataQueryService.uploadFile(file, spreadsheetSessionId ?? undefined);
+      setSpreadsheetSessionId(uploadResult.session_id);
+      setSpreadsheetFileDataset(uploadResult);
+      setSpreadsheetFileName(file.name);
+      setSpreadsheetSelectedSheet(uploadResult.sheets[0] || "");
+      setSpreadsheetUploadMessage(`Uploaded: ${file.name} (${uploadResult.rows} rows)`);
+    } catch (uploadError) {
+      setSpreadsheetUploadMessage(null);
+      setError(formatSpreadsheetRequestError(uploadError, "Spreadsheet upload failed."));
+    } finally {
+      if (event.target) {
+        event.target.value = "";
+      }
+    }
+  };
+
   if (loadingHistory) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -634,6 +786,32 @@ function ChatApp() {
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-3xl font-bold">Gemini Chatbot</h1>
           <div className="flex items-center gap-4">
+            <button
+              onClick={() => window.open("http://localhost:5173/research-digest", "_blank")}
+              className="inline-flex items-center gap-2 rounded-2xl border border-cyan-300 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-100"
+              title="Open Research Digest Agent in a new tab"
+            >
+              <span aria-hidden="true">✓</span>
+              Research Digest Agent
+            </button>
+            <button
+              onClick={() => window.open("http://localhost:5173/tic-tac-toe", "_blank")}
+              className="inline-flex items-center gap-2 rounded-2xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100"
+              title="Open Tic Tac Toe Agent in a new tab"
+            >
+              <span aria-hidden="true">🎮</span>
+              Tic Tac Toe Agent
+            </button>
+            <a
+              href="/csv-query-agent"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+              title="Open CSV / Google Sheets Query Agent in a new tab"
+            >
+              <span aria-hidden="true">▦</span>
+              CSV / Sheets Agent
+            </a>
             {user && <span className="text-sm text-slate-600">Welcome, {user.name}</span>}
             <button
               onClick={handleLogout}
@@ -642,11 +820,42 @@ function ChatApp() {
               Logout
             </button>
           </div>
+    </div>
         </div>
         <p className="mt-2 text-slate-600">Ask the model a question and receive an answer from the backend.</p>
 
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
           <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:h-[70vh] lg:overflow-y-auto">
+            <button
+              onClick={() => {
+                setSidebarView("chat");
+                void handleNewChat();
+              }}
+              className="w-full mb-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 px-3 transition text-left"
+            >
+              + New Chat
+            </button>
+            <button
+              onClick={() => {
+                setSidebarView("chat");
+                void handleModeSwitch("db");
+              }}
+              className="w-full mb-2 rounded-xl bg-slate-700 hover:bg-slate-800 text-white text-sm font-semibold py-2 px-3 transition text-left"
+            >
+              Query DB
+            </button>
+            <button
+              onClick={() => {
+                setSidebarView("spreadsheet");
+                void handleModeSwitch("db");
+              }}
+              className={`w-full mb-4 rounded-xl text-white text-sm font-semibold py-2 px-3 transition text-left ${
+                sidebarView === "spreadsheet" ? "bg-emerald-700" : "bg-emerald-600 hover:bg-emerald-700"
+              }`}
+            >
+              Spreadsheet
+            </button>
+
             <RagDebugPanel
               data={ragDebug}
               loading={ragDebugLoading}
@@ -745,6 +954,171 @@ function ChatApp() {
           </aside>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm lg:h-[70vh] lg:overflow-y-auto">
+            {sidebarView === "spreadsheet" ? (
+              <div className="space-y-5">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-semibold text-slate-800">Query Spreadsheet</h2>
+                    <p className="text-sm text-slate-500">Ask questions about your spreadsheet in plain English.</p>
+                  </div>
+                  <div className="inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setSpreadsheetMode("existing_chat")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${spreadsheetMode === "existing_chat" ? "bg-slate-100 text-slate-900" : "text-slate-500"}`}
+                    >
+                      Existing Chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSpreadsheetMode("nl_sql")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${spreadsheetMode === "nl_sql" ? "bg-slate-100 text-slate-900" : "text-slate-500"}`}
+                    >
+                      NL-SQL
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSpreadsheetMode("dataframe")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${spreadsheetMode === "dataframe" ? "bg-emerald-600 text-white" : "text-slate-500"}`}
+                    >
+                      DataFrame
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="mb-4 flex gap-6 text-sm text-slate-700">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="radio"
+                        checked={spreadsheetSource === "google_sheets"}
+                        onChange={() => {
+                          setSpreadsheetSource("google_sheets");
+                          setSpreadsheetAnswer(null);
+                          setSpreadsheetPandasCode(null);
+                          setSpreadsheetSelectedSheet(spreadsheetGoogleDataset?.sheets[0] || "");
+                        }}
+                      />
+                      Google Sheet
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="radio"
+                        checked={spreadsheetSource === "excel_csv"}
+                        onChange={() => {
+                          setSpreadsheetSource("excel_csv");
+                          setSpreadsheetAnswer(null);
+                          setSpreadsheetPandasCode(null);
+                          setSpreadsheetSelectedSheet(spreadsheetFileDataset?.sheets[0] || "");
+                        }}
+                      />
+                      CSV / XLSX File
+                    </label>
+                  </div>
+
+                  {spreadsheetSource === "excel_csv" ? (
+                    <div className="mb-4 space-y-2">
+                      <label className="block text-sm font-semibold text-slate-700">Upload CSV / XLSX</label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          ref={spreadsheetFileInputRef}
+                          type="file"
+                          accept=".csv,.xlsx,.xls"
+                          className="hidden"
+                          onChange={handleSpreadsheetFileSelected}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => spreadsheetFileInputRef.current?.click()}
+                          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+                        >
+                          Choose File
+                        </button>
+                        <span className="text-sm text-slate-500">{spreadsheetFileName || "No file chosen"}</span>
+                      </div>
+                      {spreadsheetUploadMessage ? <p className="text-xs text-slate-500">{spreadsheetUploadMessage}</p> : null}
+                    </div>
+                  ) : (
+                    <div className="mb-4 space-y-2">
+                      <label className="block text-sm font-semibold text-slate-700">Google Sheets URL</label>
+                      <input
+                        value={spreadsheetUrl}
+                        onChange={(e) => setSpreadsheetUrl(e.target.value)}
+                        placeholder="https://docs.google.com/spreadsheets/d/..."
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                      />
+                    </div>
+                  )}
+
+                  {activeSpreadsheetDataset?.sheets?.length ? (
+                    <div className="mb-4 space-y-2">
+                      <label className="block text-sm font-semibold text-slate-700">Worksheet</label>
+                      <select
+                        value={spreadsheetSelectedSheet}
+                        onChange={(e) => setSpreadsheetSelectedSheet(e.target.value)}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                      >
+                        {activeSpreadsheetDataset.sheets.map((sheet) => (
+                          <option key={sheet} value={sheet}>
+                            {sheet}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-slate-500">
+                        {activeSpreadsheetDataset.rows} rows loaded from {activeSpreadsheetDataset.source_name}
+                      </p>
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    <label className="block text-sm font-semibold text-slate-700">Question</label>
+                    <textarea
+                      value={spreadsheetQuestion}
+                      onChange={(e) => setSpreadsheetQuestion(e.target.value)}
+                      placeholder="what is the payment method of Ivy Wilson?"
+                      rows={4}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-3 text-sm focus:border-slate-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="mt-4 flex justify-start">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleSpreadsheetQuery();
+                      }}
+                      disabled={spreadsheetLoading || loading}
+                      className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+                    >
+                      {spreadsheetLoading ? "Analyzing..." : "Analyze"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="mb-3 text-lg font-semibold text-slate-800">Answer</h3>
+                  {spreadsheetAnswer ? (
+                    <div className="space-y-2 text-sm text-slate-700">
+                      <pre className="whitespace-pre-wrap break-words font-sans text-sm text-slate-700">{spreadsheetAnswer}</pre>
+                      {spreadsheetPandasCode ? (
+                        <div className="rounded-2xl bg-slate-50 p-3">
+                          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Pandas Code</p>
+                          <pre className="whitespace-pre-wrap break-words text-xs text-slate-700">{spreadsheetPandasCode}</pre>
+                        </div>
+                      ) : null}
+                      {activeSpreadsheetDataset?.source_name ? (
+                        <p className="text-xs text-slate-500">Source: {activeSpreadsheetDataset.source_name}</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400">Run an analysis to see the answer here.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            {sidebarView !== "spreadsheet" ? (
+            <>
             <div className="space-y-4">
               {messages.length === 0 && (
                 <div className="text-center text-slate-500 py-8">
@@ -893,6 +1267,316 @@ function ChatApp() {
                 <option value="db">DB Query</option>
               </select>
             </label>
+            </>
+            ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CsvGoogleSheetsQueryAgentScreen() {
+  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
+  const [spreadsheetSource, setSpreadsheetSource] = useState<SpreadsheetSource>("google_sheets");
+  const [spreadsheetMode, setSpreadsheetMode] = useState<SpreadsheetMode>("dataframe");
+  const [spreadsheetUrl, setSpreadsheetUrl] = useState("");
+  const [spreadsheetQuestion, setSpreadsheetQuestion] = useState("");
+  const [spreadsheetLoading, setSpreadsheetLoading] = useState(false);
+  const [spreadsheetSessionId, setSpreadsheetSessionId] = useState<string | null>(null);
+  const [spreadsheetFileDataset, setSpreadsheetFileDataset] = useState<DataQueryDatasetResponse | null>(null);
+  const [spreadsheetGoogleDataset, setSpreadsheetGoogleDataset] = useState<DataQueryDatasetResponse | null>(null);
+  const [spreadsheetGoogleSourceUrl, setSpreadsheetGoogleSourceUrl] = useState("");
+  const [spreadsheetFileName, setSpreadsheetFileName] = useState<string | null>(null);
+  const [spreadsheetSelectedSheet, setSpreadsheetSelectedSheet] = useState("");
+  const [spreadsheetUploadMessage, setSpreadsheetUploadMessage] = useState<string | null>(null);
+  const [spreadsheetAnswer, setSpreadsheetAnswer] = useState<string | null>(null);
+  const [spreadsheetPandasCode, setSpreadsheetPandasCode] = useState<string | null>(null);
+  const spreadsheetFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const activeSpreadsheetDataset =
+    spreadsheetSource === "excel_csv" ? spreadsheetFileDataset : spreadsheetGoogleDataset;
+
+  const handleSpreadsheetQuery = async () => {
+    const question = spreadsheetQuestion.trim();
+    if (!question) {
+      setError("Enter a spreadsheet question.");
+      return;
+    }
+    if (spreadsheetSource === "excel_csv" && !spreadsheetFileDataset) {
+      setError("Upload a CSV or XLSX file first.");
+      return;
+    }
+    if (spreadsheetSource === "google_sheets" && !spreadsheetUrl.trim()) {
+      setError("Enter Google Sheets URL.");
+      return;
+    }
+
+    setError(null);
+    setSpreadsheetAnswer(null);
+    setSpreadsheetPandasCode(null);
+    setSpreadsheetLoading(true);
+
+    try {
+      let dataset = activeSpreadsheetDataset;
+      let sessionId = spreadsheetSessionId ?? undefined;
+
+      if (spreadsheetSource === "google_sheets") {
+        const normalizedUrl = spreadsheetUrl.trim();
+        if (!dataset || spreadsheetGoogleSourceUrl !== normalizedUrl) {
+          const loadedDataset = await dataQueryService.loadGoogleSheet(normalizedUrl, sessionId);
+          dataset = loadedDataset;
+          sessionId = loadedDataset.session_id;
+          setSpreadsheetSessionId(loadedDataset.session_id);
+          setSpreadsheetGoogleDataset(loadedDataset);
+          setSpreadsheetGoogleSourceUrl(normalizedUrl);
+          setSpreadsheetSelectedSheet(loadedDataset.sheets[0] || "");
+          setSpreadsheetUploadMessage(`Loaded Google Sheet: ${loadedDataset.source_name}`);
+        }
+      }
+
+      if (!dataset) {
+        throw new Error("No spreadsheet dataset is loaded.");
+      }
+
+      const sheetName =
+        spreadsheetSelectedSheet && dataset.sheets.includes(spreadsheetSelectedSheet)
+          ? spreadsheetSelectedSheet
+          : (dataset.sheets[0] ?? undefined);
+
+      if (sheetName && sheetName !== spreadsheetSelectedSheet) {
+        setSpreadsheetSelectedSheet(sheetName);
+      }
+
+      const answer = await dataQueryService.askQuestion({
+        sessionId: sessionId ?? dataset.session_id,
+        datasetId: dataset.dataset_id,
+        sheetName,
+        question,
+        includePandasCode: spreadsheetMode === "dataframe",
+      });
+
+      setSpreadsheetSessionId(answer.session_id);
+      setSpreadsheetAnswer(answer.answer);
+      setSpreadsheetPandasCode(answer.pandas_code ?? null);
+    } catch (err) {
+      setError(formatSpreadsheetRequestError(err, "Failed to run spreadsheet query."));
+    } finally {
+      setSpreadsheetLoading(false);
+    }
+  };
+
+  const handleSpreadsheetFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!["csv", "xlsx", "xls"].includes(extension)) {
+      setError("Only CSV and XLSX files are supported in Spreadsheet mode.");
+      return;
+    }
+
+    setError(null);
+    setSpreadsheetUploadMessage("Uploading file...");
+    setSpreadsheetAnswer(null);
+    setSpreadsheetPandasCode(null);
+    try {
+      const uploadResult = await dataQueryService.uploadFile(file, spreadsheetSessionId ?? undefined);
+      setSpreadsheetSessionId(uploadResult.session_id);
+      setSpreadsheetFileDataset(uploadResult);
+      setSpreadsheetFileName(file.name);
+      setSpreadsheetSelectedSheet(uploadResult.sheets[0] || "");
+      setSpreadsheetUploadMessage(`Uploaded: ${file.name} (${uploadResult.rows} rows)`);
+    } catch (uploadError) {
+      setSpreadsheetUploadMessage(null);
+      setError(formatSpreadsheetRequestError(uploadError, "Spreadsheet upload failed."));
+    } finally {
+      if (event.target) {
+        event.target.value = "";
+      }
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto max-w-5xl p-4 sm:p-6 lg:p-8">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">CSV / Google Sheets Query Agent</h1>
+            <p className="text-sm text-slate-500">Upload a file or load a Google Sheet, then query it in natural language.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate("/", { replace: true })}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+          >
+            <span aria-hidden="true">←</span>
+            Return
+          </button>
+        </div>
+
+        {error ? <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+        <div className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-800">Query Spreadsheet</h2>
+              <p className="text-sm text-slate-500">Ask questions about your spreadsheet in plain English.</p>
+            </div>
+            <div className="inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setSpreadsheetMode("existing_chat")}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${spreadsheetMode === "existing_chat" ? "bg-slate-100 text-slate-900" : "text-slate-500"}`}
+              >
+                Existing Chat
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpreadsheetMode("nl_sql")}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${spreadsheetMode === "nl_sql" ? "bg-slate-100 text-slate-900" : "text-slate-500"}`}
+              >
+                NL-SQL
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpreadsheetMode("dataframe")}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${spreadsheetMode === "dataframe" ? "bg-emerald-600 text-white" : "text-slate-500"}`}
+              >
+                DataFrame
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-wrap gap-6 text-sm text-slate-700">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  checked={spreadsheetSource === "google_sheets"}
+                  onChange={() => {
+                    setSpreadsheetSource("google_sheets");
+                    setSpreadsheetAnswer(null);
+                    setSpreadsheetPandasCode(null);
+                    setSpreadsheetSelectedSheet(spreadsheetGoogleDataset?.sheets[0] || "");
+                  }}
+                />
+                Google Sheet
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  checked={spreadsheetSource === "excel_csv"}
+                  onChange={() => {
+                    setSpreadsheetSource("excel_csv");
+                    setSpreadsheetAnswer(null);
+                    setSpreadsheetPandasCode(null);
+                    setSpreadsheetSelectedSheet(spreadsheetFileDataset?.sheets[0] || "");
+                  }}
+                />
+                CSV / XLSX File
+              </label>
+            </div>
+
+            {spreadsheetSource === "excel_csv" ? (
+              <div className="mb-4 space-y-2">
+                <label className="block text-sm font-semibold text-slate-700">Upload CSV / XLSX</label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    ref={spreadsheetFileInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    className="hidden"
+                    onChange={handleSpreadsheetFileSelected}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => spreadsheetFileInputRef.current?.click()}
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Choose File
+                  </button>
+                  <span className="text-sm text-slate-500">{spreadsheetFileName || "No file chosen"}</span>
+                </div>
+                {spreadsheetUploadMessage ? <p className="text-xs text-slate-500">{spreadsheetUploadMessage}</p> : null}
+              </div>
+            ) : (
+              <div className="mb-4 space-y-2">
+                <label className="block text-sm font-semibold text-slate-700">Google Sheets URL</label>
+                <input
+                  value={spreadsheetUrl}
+                  onChange={(e) => setSpreadsheetUrl(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/..."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                />
+              </div>
+            )}
+
+            {activeSpreadsheetDataset?.sheets?.length ? (
+              <div className="mb-4 space-y-2">
+                <label className="block text-sm font-semibold text-slate-700">Worksheet</label>
+                <select
+                  value={spreadsheetSelectedSheet}
+                  onChange={(e) => setSpreadsheetSelectedSheet(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                >
+                  {activeSpreadsheetDataset.sheets.map((sheet) => (
+                    <option key={sheet} value={sheet}>
+                      {sheet}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500">
+                  {activeSpreadsheetDataset.rows} rows loaded from {activeSpreadsheetDataset.source_name}
+                </p>
+              </div>
+            ) : null}
+
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-slate-700">Question</label>
+              <textarea
+                value={spreadsheetQuestion}
+                onChange={(e) => setSpreadsheetQuestion(e.target.value)}
+                placeholder="what is the payment method of Ivy Wilson?"
+                rows={4}
+                className="w-full rounded-lg border border-slate-300 px-3 py-3 text-sm focus:border-slate-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="mt-4 flex justify-start">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSpreadsheetQuery();
+                }}
+                disabled={spreadsheetLoading}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {spreadsheetLoading ? "Analyzing..." : "Analyze"}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h3 className="mb-3 text-lg font-semibold text-slate-800">Answer</h3>
+            {spreadsheetAnswer ? (
+              <div className="space-y-2 text-sm text-slate-700">
+                <pre className="whitespace-pre-wrap break-words font-sans text-sm text-slate-700">{spreadsheetAnswer}</pre>
+                {spreadsheetPandasCode ? (
+                  <div className="rounded-2xl bg-slate-50 p-3">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Pandas Code</p>
+                    <pre className="whitespace-pre-wrap break-words text-xs text-slate-700">{spreadsheetPandasCode}</pre>
+                  </div>
+                ) : null}
+                {activeSpreadsheetDataset?.source_name ? (
+                  <p className="text-xs text-slate-500">Source: {activeSpreadsheetDataset.source_name}</p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">Run an analysis to see the answer here.</p>
+            )}
           </div>
         </div>
       </div>
@@ -936,6 +1620,18 @@ function App() {
         <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <Login />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/" element={isAuthenticated ? <ChatApp /> : <Navigate to="/login" replace />} />
+        <Route
+          path="/csv-query-agent"
+          element={isAuthenticated ? <CsvGoogleSheetsQueryAgentScreen /> : <Navigate to="/login" replace />}
+        />
+        <Route
+          path="/research-digest"
+          element={isAuthenticated ? <ResearchDigest /> : <Navigate to="/login" replace />}
+        />
+        <Route
+          path="/tic-tac-toe"
+          element={isAuthenticated ? <TicTacToe /> : <Navigate to="/login" replace />}
+        />
       </Routes>
     </Router>
   );

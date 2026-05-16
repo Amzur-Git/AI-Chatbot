@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Research Digest Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    /* ── custom scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1e1e2e; }
+    ::-webkit-scrollbar-thumb { background: #4c4f69; border-radius: 3px; }
+
+    /* ── SSE event card animations ── */
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .event-card { animation: slideIn 0.25s ease-out; }
+
+    /* ── pulsing dot for active states ── */
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .pulse-dot { animation: pulse 1.2s infinite; }
+
+    /* ── digest markdown styles ── */
+    #digest-content h2 { font-size: 1.3rem; font-weight: 700; color: #89b4fa; margin: 1.5rem 0 .6rem; border-bottom: 1px solid #313244; padding-bottom: .3rem; }
+    #digest-content h3 { font-size: 1.05rem; font-weight: 600; color: #cba6f7; margin: 1rem 0 .4rem; }
+    #digest-content ul  { list-style: disc; padding-left: 1.5rem; }
+    #digest-content ol  { list-style: decimal; padding-left: 1.5rem; }
+    #digest-content li  { margin: .35rem 0; color: #cdd6f4; line-height: 1.6; }
+    #digest-content p   { color: #cdd6f4; line-height: 1.75; margin: .5rem 0; }
+    #digest-content strong { color: #f5c2e7; }
+    #digest-content a   { color: #89dceb; text-decoration: underline; }
+    #digest-content code { background:#313244; padding: 0 4px; border-radius:3px; font-size:.85em; }
+
+    /* ── paper card hover ── */
+    .paper-card { transition: border-color .2s; }
+    .paper-card:hover { border-color: #89b4fa; }
+  </style>
+</head>
+<body class="bg-[#1e1e2e] text-[#cdd6f4] min-h-screen font-sans">
+
+<!-- ─────────────────────── HEADER ─────────────────────── -->
+<header class="border-b border-[#313244] px-6 py-4 flex items-center gap-3">
+  <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-[#89b4fa] to-[#cba6f7] flex items-center justify-center text-[#1e1e2e] font-bold text-lg">R</div>
+  <div>
+    <h1 class="text-lg font-bold text-[#cdd6f4]">Research Digest Agent</h1>
+    <p class="text-xs text-[#6c7086]">Autonomous arXiv research · ReAct loop · Real-time streaming</p>
+  </div>
+  <div id="status-badge" class="ml-auto hidden items-center gap-2 text-xs px-3 py-1 rounded-full bg-[#313244]">
+    <span class="pulse-dot w-2 h-2 rounded-full bg-[#a6e3a1]"></span>
+    <span id="status-text">Running…</span>
+  </div>
+</header>
+
+<!-- ─────────────────────── MAIN LAYOUT ─────────────────────── -->
+<main class="max-w-6xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-5 gap-6">
+
+  <!-- LEFT PANEL: Input + Agent Log -->
+  <section class="lg:col-span-2 flex flex-col gap-4">
+
+    <!-- Search Form -->
+    <div class="bg-[#181825] rounded-xl border border-[#313244] p-5">
+      <label class="block text-sm font-semibold text-[#89b4fa] mb-2">Research Topic</label>
+      <textarea
+        id="topic-input"
+        rows="3"
+        placeholder="e.g. Large Language Models for code generation&#10;e.g. Diffusion models in drug discovery"
+        class="w-full bg-[#1e1e2e] border border-[#313244] rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:border-[#89b4fa] placeholder-[#585b70]"
+      ></textarea>
+
+      <!-- Quick-topic chips -->
+      <div class="flex flex-wrap gap-2 mt-3">
+        <span class="text-xs text-[#6c7086] mr-1 self-center">Quick topics:</span>
+        <button onclick="setTopic('Retrieval Augmented Generation')"           class="chip">RAG</button>
+        <button onclick="setTopic('Vision Language Models')"                   class="chip">VLMs</button>
+        <button onclick="setTopic('Reinforcement Learning from Human Feedback')" class="chip">RLHF</button>
+        <button onclick="setTopic('Graph Neural Networks')"                    class="chip">GNNs</button>
+        <button onclick="setTopic('AI agents and tool use')"                   class="chip">AI Agents</button>
+        <button onclick="setTopic('Quantum machine learning')"                 class="chip">Quantum ML</button>
+      </div>
+
+      <button
+        id="run-btn"
+        onclick="startResearch()"
+        class="mt-4 w-full bg-gradient-to-r from-[#89b4fa] to-[#cba6f7] text-[#1e1e2e] font-bold py-2.5 rounded-lg text-sm hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        🔍 Run Research Agent
+      </button>
+      <button
+        id="reset-btn"
+        onclick="resetUI()"
+        class="hidden mt-2 w-full border border-[#313244] text-[#6c7086] font-medium py-2 rounded-lg text-sm hover:border-[#89b4fa] hover:text-[#89b4fa] transition-colors"
+      >
+        ↺ New Research
+      </button>
+    </div>
+
+    <!-- Agent Activity Log -->
+    <div class="bg-[#181825] rounded-xl border border-[#313244] p-4 flex flex-col flex-1 min-h-[300px]">
+      <h2 class="text-sm font-semibold text-[#89b4fa] mb-3">Agent Activity Log</h2>
+      <div id="log-container" class="flex-1 overflow-y-auto space-y-2 text-xs font-mono max-h-[520px]">
+        <p class="text-[#585b70]">Activity will appear here once you start the agent…</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- RIGHT PANEL: Papers + Digest -->
+  <section class="lg:col-span-3 flex flex-col gap-4">
+
+    <!-- Papers Panel -->
+    <div id="papers-panel" class="hidden bg-[#181825] rounded-xl border border-[#313244] p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-[#89b4fa]">Papers Collected</h2>
+        <span id="paper-count" class="text-xs bg-[#313244] text-[#cba6f7] px-2 py-0.5 rounded-full">0</span>
+      </div>
+      <div id="papers-list" class="space-y-3 max-h-72 overflow-y-auto pr-1"></div>
+    </div>
+
+    <!-- Digest Panel -->
+    <div id="digest-panel" class="hidden bg-[#181825] rounded-xl border border-[#313244] p-5 flex-1">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-[#89b4fa]">Research Digest</h2>
+        <div class="flex gap-2">
+          <button onclick="copyDigest()" class="text-xs text-[#6c7086] hover:text-[#cdd6f4] transition-colors px-2 py-1 border border-[#313244] rounded-md">Copy</button>
+          <button onclick="downloadDigest()" class="text-xs text-[#6c7086] hover:text-[#cdd6f4] transition-colors px-2 py-1 border border-[#313244] rounded-md">Download</button>
+        </div>
+      </div>
+      <div id="digest-content" class="prose prose-invert max-w-none leading-relaxed overflow-y-auto max-h-[640px] pr-1">
+        <div id="digest-cursor" class="inline-block w-2 h-4 bg-[#89b4fa] animate-pulse ml-0.5"></div>
+      </div>
+    </div>
+
+    <!-- Placeholder when idle -->
+    <div id="idle-placeholder" class="bg-[#181825] rounded-xl border border-[#313244] p-10 flex flex-col items-center justify-center text-center gap-3 flex-1">
+      <div class="text-5xl opacity-30">📄</div>
+      <p class="text-[#585b70] text-sm">Enter a research topic and run the agent.<br/>The digest will stream here in real time.</p>
+      <div class="mt-4 grid grid-cols-3 gap-3 w-full max-w-sm">
+        <div class="bg-[#313244] rounded-lg p-3 text-center">
+          <div class="text-[#89b4fa] font-bold text-lg">arXiv</div>
+          <div class="text-[#585b70] text-xs mt-1">Live search</div>
+        </div>
+        <div class="bg-[#313244] rounded-lg p-3 text-center">
+          <div class="text-[#cba6f7] font-bold text-lg">ReAct</div>
+          <div class="text-[#585b70] text-xs mt-1">Agent loop</div>
+        </div>
+        <div class="bg-[#313244] rounded-lg p-3 text-center">
+          <div class="text-[#a6e3a1] font-bold text-lg">SSE</div>
+          <div class="text-[#585b70] text-xs mt-1">Real-time</div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</main>
+
+<!-- ─────────────────────── CHIP STYLE ─────────────────────── -->
+<style>
+  .chip {
+    font-size: .7rem;
+    padding: 2px 10px;
+    border-radius: 9999px;
+    border: 1px solid #313244;
+    color: #6c7086;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .chip:hover { border-color: #89b4fa; color: #89b4fa; }
+</style>
+
+<!-- ─────────────────────── SCRIPT ─────────────────────── -->
+<script>
+  const API_BASE = "http://127.0.0.1:8010";
+  let currentTopic = "";
+  let digestMarkdown = "";
+  let digestRaw = "";
+  let activeSSE = null;
+  let allPapers = [];
+
+  // ── DOM helpers ─────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+
+  function setTopic(text) {
+    $("topic-input").value = text;
+  }
+
+  function log(html, type = "info") {
+    const colors = {
+      info:    "text-[#cdd6f4]",
+      success: "text-[#a6e3a1]",
+      warning: "text-[#f9e2af]",
+      error:   "text-[#f38ba8]",
+      muted:   "text-[#585b70]",
+      accent:  "text-[#89b4fa]",
+      purple:  "text-[#cba6f7]",
+    };
+    const el = document.createElement("div");
+    el.className = `event-card ${colors[type] || colors.info}`;
+    el.innerHTML = html;
+    const container = $("log-container");
+    // clear placeholder
+    if (container.querySelector("p")) container.innerHTML = "";
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function ts() {
+    return `<span class="text-[#45475a]">[${new Date().toLocaleTimeString()}]</span> `;
+  }
+
+  // ── Paper card ──────────────────────────────────────────────
+  function renderPaper(p, iterLabel) {
+    const authors = (p.authors || []).slice(0, 3).join(", ");
+    return `
+      <div class="paper-card border border-[#313244] rounded-lg p-3 bg-[#1e1e2e]">
+        <div class="flex items-start justify-between gap-2">
+          <a href="${p.url}" target="_blank" rel="noopener noreferrer"
+             class="text-xs font-semibold text-[#89b4fa] hover:underline leading-tight flex-1">
+            ${escapeHtml(p.title)}
+          </a>
+          <span class="text-[10px] text-[#585b70] whitespace-nowrap shrink-0">${p.published?.slice(0,4) || ''}</span>
+        </div>
+        <p class="text-[10px] text-[#6c7086] mt-0.5">${escapeHtml(authors)}${p.authors?.length > 3 ? ' et al.' : ''}</p>
+        <p class="text-[10px] text-[#45475a] mt-1 line-clamp-2">${escapeHtml((p.abstract || '').slice(0, 180))}…</p>
+        <div class="flex gap-2 mt-1.5">
+          <span class="text-[10px] bg-[#313244] text-[#cba6f7] px-1.5 py-0.5 rounded">${escapeHtml(p.primary_category || '')}</span>
+          <span class="text-[10px] text-[#585b70]">${iterLabel}</span>
+        </div>
+      </div>`;
+  }
+
+  function escapeHtml(str) {
+    return String(str || "")
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;");
+  }
+
+  // ── Main: start research ────────────────────────────────────
+  function startResearch() {
+    const topic = $("topic-input").value.trim();
+    if (!topic) { alert("Please enter a research topic."); return; }
+
+    currentTopic = topic;
+    digestMarkdown = "";
+    digestRaw = "";
+    allPapers = [];
+    resetPanels();
+
+    $("run-btn").disabled = true;
+    $("topic-input").disabled = true;
+    $("reset-btn").classList.remove("hidden");
+    $("status-badge").classList.remove("hidden");
+    $("status-badge").classList.add("flex");
+    $("status-text").textContent = "Running…";
+
+    if (activeSSE) activeSSE.close();
+
+    // POST → get SSE stream
+    fetch(`${API_BASE}/api/research`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic }),
+    }).then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      function read() {
+        reader.read().then(({ done, value }) => {
+          if (done) {
+            onStreamDone();
+            return;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop(); // last might be incomplete
+          lines.forEach(line => {
+            if (line.startsWith("data: ")) {
+              try {
+                const evt = JSON.parse(line.slice(6));
+                handleEvent(evt);
+              } catch(e) { /* skip malformed */ }
+            }
+          });
+          read();
+        }).catch(err => {
+          log(`${ts()}Stream error: ${escapeHtml(String(err))}`, "error");
+          onStreamDone(true);
+        });
+      }
+      read();
+    }).catch(err => {
+      log(`${ts()}Connection failed: ${escapeHtml(String(err))}`, "error");
+      onStreamDone(true);
+    });
+  }
+
+  // ── Event dispatcher ────────────────────────────────────────
+  function handleEvent(evt) {
+    const { event, data } = evt;
+
+    switch (event) {
+      case "agent_start":
+        log(`${ts()}🚀 Agent started for: <strong>"${escapeHtml(data.topic)}"</strong> (max ${data.max_iterations} iterations)`, "accent");
+        break;
+
+      case "thinking":
+        log(`${ts()}🧠 <strong>Think</strong> [iter ${data.iteration}] — ${escapeHtml(data.message)} · Papers so far: ${data.papers_so_far}`, "purple");
+        break;
+
+      case "searching":
+        log(`${ts()}🔍 <strong>Search</strong> [iter ${data.iteration}] → <code class="bg-[#313244] px-1 rounded text-[#f9e2af]">${escapeHtml(data.query)}</code>`, "warning");
+        break;
+
+      case "papers_found": {
+        const iter = data.iteration;
+        log(`${ts()}📚 <strong>Found</strong> ${data.new_count} new / ${data.total_count} total papers`, "success");
+        // show papers panel
+        $("papers-panel").classList.remove("hidden");
+        $("idle-placeholder").classList.add("hidden");
+        $("paper-count").textContent = data.total_count;
+        const list = $("papers-list");
+        (data.papers || []).forEach(p => {
+          allPapers.push(p);
+          list.insertAdjacentHTML("beforeend", renderPaper(p, `iter ${iter}`));
+        });
+        break;
+      }
+
+      case "evaluating":
+        log(`${ts()}⚖️  <strong>Evaluate</strong> — ${escapeHtml(data.message)} (${data.total} papers)`, "muted");
+        break;
+
+      case "evaluation_result": {
+        const icon = data.sufficient ? "✅" : "⚠️";
+        const color = data.sufficient ? "success" : "warning";
+        log(`${ts()}${icon} <strong>Decision: ${data.sufficient ? "Sufficient" : "Insufficient"}</strong> — ${escapeHtml(data.reason)}${data.missing ? ` | Missing: ${escapeHtml(data.missing)}` : ""}`, color);
+        break;
+      }
+
+      case "synthesizing":
+        log(`${ts()}✍️  <strong>Synthesizing</strong> digest from ${data.paper_titles?.length || 0} papers…`, "accent");
+        $("digest-panel").classList.remove("hidden");
+        $("idle-placeholder").classList.add("hidden");
+        $("status-text").textContent = "Generating digest…";
+        break;
+
+      case "digest_chunk":
+        digestRaw += data.chunk || "";
+        renderDigestChunk();
+        break;
+
+      case "done":
+        log(`${ts()}🎉 <strong>Done!</strong> Digest complete — ${data.papers_used} papers, ${data.digest_length} characters`, "success");
+        $("digest-cursor").remove && $("digest-cursor")?.remove();
+        onStreamDone(false);
+        break;
+
+      case "error":
+        log(`${ts()}❌ <strong>Error:</strong> ${escapeHtml(data.message)}`, "error");
+        onStreamDone(true);
+        break;
+
+      default:
+        log(`${ts()}[${escapeHtml(event)}] ${escapeHtml(JSON.stringify(data))}`, "muted");
+    }
+  }
+
+  // ── Stream: render accumulated digest with marked.js ───────
+  function renderDigestChunk() {
+    const content = $("digest-content");
+    // parse accumulated markdown
+    const rendered = marked.parse(digestRaw);
+    content.innerHTML = rendered + '<span id="digest-cursor" class="inline-block w-2 h-4 bg-[#89b4fa] animate-pulse ml-0.5"></span>';
+    content.scrollTop = content.scrollHeight;
+  }
+
+  function onStreamDone(isError = false) {
+    $("run-btn").disabled = false;
+    $("topic-input").disabled = false;
+    $("status-badge").classList.remove("flex");
+    $("status-badge").classList.add("hidden");
+
+    // Remove cursor
+    const cursor = $("digest-cursor");
+    if (cursor) cursor.remove();
+
+    // Final render
+    if (digestRaw) {
+      $("digest-content").innerHTML = marked.parse(digestRaw);
+    }
+
+    if (!isError) {
+      digestMarkdown = digestRaw;
+    }
+  }
+
+  // ── Reset ───────────────────────────────────────────────────
+  function resetPanels() {
+    $("log-container").innerHTML = '<p class="text-[#585b70]">Activity will appear here once you start the agent…</p>';
+    $("papers-list").innerHTML = "";
+    $("paper-count").textContent = "0";
+    $("papers-panel").classList.add("hidden");
+    $("digest-panel").classList.add("hidden");
+    $("idle-placeholder").classList.remove("hidden");
+    $("digest-content").innerHTML = '<div id="digest-cursor" class="inline-block w-2 h-4 bg-[#89b4fa] animate-pulse ml-0.5"></div>';
+  }
+
+  function resetUI() {
+    if (activeSSE) { activeSSE.close(); activeSSE = null; }
+    $("topic-input").disabled = false;
+    $("run-btn").disabled = false;
+    $("reset-btn").classList.add("hidden");
+    $("status-badge").classList.add("hidden");
+    resetPanels();
+    digestMarkdown = "";
+    digestRaw = "";
+    allPapers = [];
+  }
+
+  // ── Copy / Download ─────────────────────────────────────────
+  function copyDigest() {
+    if (!digestRaw) { alert("No digest yet."); return; }
+    navigator.clipboard.writeText(digestRaw).then(() => {
+      alert("Digest copied to clipboard!");
+    });
+  }
+
+  function downloadDigest() {
+    if (!digestRaw) { alert("No digest yet."); return; }
+    const blob = new Blob([digestRaw], { type: "text/markdown" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `research-digest-${currentTopic.slice(0,30).replace(/\s+/g,"-")}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+</script>
+</body>
+</html>

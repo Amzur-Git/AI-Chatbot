@@ -52,6 +52,23 @@ export type UploadAttachmentResponse = {
   download_url: string;
 };
 
+export type DataQueryDatasetResponse = {
+  session_id: string;
+  dataset_id: string;
+  source_name: string;
+  rows: number;
+  columns: string[];
+  sheets: string[];
+};
+
+export type DataQueryAskResponse = {
+  question: string;
+  answer: string;
+  pandas_code?: string | null;
+  session_id: string;
+  dataset_id: string;
+};
+
 export type GenerateImagePayload = {
   id?: number;
   name: string;
