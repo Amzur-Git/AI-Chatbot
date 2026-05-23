@@ -45,9 +45,23 @@ class Settings(BaseSettings):
     google_client_id: Optional[str]
     google_client_secret: Optional[str]
     google_redirect_uri: str = "http://localhost:8000/api/auth/google/callback"
+    google_service_account_json: Optional[str] = None
     frontend_base_url: str = "http://localhost:5174"
     allowed_email_domain: str = "amzur.com"
     chroma_persist_dir: str = "./chroma_db"
+
+    # n8n ticket workflow integration
+    n8n_webhook_url: Optional[str] = "http://localhost:5678/webhook/ticket-automation"
+    n8n_webhook_secret: Optional[str] = None
+    n8n_closed_ticket_webhook_url: Optional[str] = None
+
+    # SMTP settings for backend notification emails
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_use_tls: bool = True
+    smtp_from_email: Optional[str] = None
 
     # JWT settings
     secret_key: str = "your-secret-key-here-change-in-production"

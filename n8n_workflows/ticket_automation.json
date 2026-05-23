@@ -1,0 +1,314 @@
+{
+  "name": "AI Ticket Automation Workflow",
+  "description": "Receives ticket creation requests from FastAPI, extracts metadata using AI, stores in PostgreSQL, sends Gmail notification",
+  "nodes": [
+    {
+      "id": "webhook_trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "parameters": {
+        "path": "ticket-triage",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {}
+    },
+    {
+      "id": "validate_secret",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $headers['x-webhook-secret'] }}",
+              "operation": "equals",
+              "value2": "{{ env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "extract_fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "parameters": {
+        "options": {},
+        "assignments": {
+          "assignments": [
+            {
+              "name": "request_id",
+              "value": "={{ $json.request_id }}"
+            },
+            {
+              "name": "user_email",
+              "value": "={{ $json.user_email }}"
+            },
+            {
+              "name": "user_name",
+              "value": "={{ $json.user_name }}"
+            },
+            {
+              "name": "issue",
+              "value": "={{ $json.issue }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ai_agent_extract_metadata",
+      "type": "n8n-nodes-base.openai",
+      "typeVersion": 1,
+      "position": [700, 300],
+      "parameters": {
+        "resource": "chat",
+        "action": "message",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "content": "You are a ticket classification AI agent. Analyze the following issue and extract metadata.\n\nIssue:\n{{ $json.issue }}\n\nRespond with ONLY valid JSON (no markdown, no code blocks):\n{\n  \"category\": \"one of: bug, feature, support, documentation, infrastructure, performance, security, ui, backend, api, database\",\n  \"priority\": \"one of: low, medium, high, critical\",\n  \"assigned_team\": \"the team that should handle this (e.g., frontend, backend, devops, security)\",\n  \"summary\": \"2-3 sentence summary of the issue\"\n}",
+              "role": "user"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "openaiApi": "openai_cred"
+      }
+    },
+    {
+      "id": "parse_ai_response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "parameters": {
+        "language": "javascript",
+        "jsCode": "const response = $json.choices[0].message.content.trim();\nlet parsed;\ntry {\n  parsed = JSON.parse(response);\n} catch (e) {\n  // Try to extract JSON from response if it's wrapped\n  const jsonMatch = response.match(/\\{[^{}]*\\}/s);\n  if (jsonMatch) {\n    parsed = JSON.parse(jsonMatch[0]);\n  } else {\n    throw new Error('Failed to parse AI response as JSON');\n  }\n}\n\nreturn {\n  ...$json,\n  category: parsed.category || 'support',\n  priority: parsed.priority || 'medium',\n  assigned_team: parsed.assigned_team || 'support',\n  summary: parsed.summary || ''\n};"
+      }
+    },
+    {
+      "id": "generate_ticket_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1100, 300],
+      "parameters": {
+        "language": "javascript",
+        "jsCode": "// Generate numeric ticket ID compatible with bigint columns\nconst ticketId = Date.now();\n\nreturn {\n  ...$json,\n  ticket_id: ticketId,\n  generated_at: new Date().toISOString()\n};"
+      }
+    },
+    {
+      "id": "store_in_postgresql",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1300, 300],
+      "parameters": {
+        "operation": "insert",
+        "table": "tickets",
+        "columns": "ticket_id,user_email,issue,category,priority,assigned_team,status,created_at,updated_at",
+        "data": "{\n  \"ticket_id\": \"{{ $json.ticket_id }}\",\n  \"user_email\": \"{{ $json.user_email }}\",\n  \"issue\": \"{{ $json.issue }}\",\n  \"category\": \"{{ $json.category }}\",\n  \"priority\": \"{{ $json.priority }}\",\n  \"assigned_team\": \"{{ $json.assigned_team }}\",\n  \"status\": \"open\",\n  \"created_at\": \"{{ now() }}\",\n  \"updated_at\": \"{{ now() }}\"\n}"
+      },
+      "credentials": {
+        "postgres": "postgresql_conn"
+      }
+    },
+    {
+      "id": "send_gmail_confirmation",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1500, 300],
+      "parameters": {
+        "operation": "send",
+        "to": "={{ $json.user_email }}",
+        "subject": "Ticket Created: {{ $json.ticket_id }}",
+        "bodyFormat": "html",
+        "body": "<h2>Ticket Created Successfully</h2>\n<p>Hi {{ $json.user_name }},</p>\n<p>Your ticket has been created and submitted to our support system.</p>\n\n<div style=\"background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;\">\n  <p><strong>Ticket ID:</strong> {{ $json.ticket_id }}</p>\n  <p><strong>Issue:</strong> {{ $json.issue }}</p>\n  <p><strong>Category:</strong> {{ $json.category }}</p>\n  <p><strong>Priority:</strong> {{ $json.priority }}</p>\n  <p><strong>Assigned Team:</strong> {{ $json.assigned_team }}</p>\n</div>\n\n<p>You can track your ticket status in your dashboard at any time.</p>\n<p>Thank you for reporting this issue!</p>"
+      },
+      "credentials": {
+        "gmail": "gmail_cred"
+      }
+    },
+    {
+      "id": "prepare_response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1700, 300],
+      "parameters": {
+        "options": {},
+        "assignments": {
+          "assignments": [
+            {
+              "name": "ticket_id",
+              "value": "={{ $json.ticket_id }}"
+            },
+            {
+              "name": "category",
+              "value": "={{ $json.category }}"
+            },
+            {
+              "name": "priority",
+              "value": "={{ $json.priority }}"
+            },
+            {
+              "name": "assigned_team",
+              "value": "={{ $json.assigned_team }}"
+            },
+            {
+              "name": "issue",
+              "value": "={{ $json.issue }}"
+            },
+            {
+              "name": "execution_id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "created_at",
+              "value": "={{ now() }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond_to_webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1900, 300],
+      "parameters": {
+        "options": {},
+        "responseCode": 200,
+        "responseData": "={\"success\": true, \"ticket_id\": \"{{ $json.ticket_id }}\", \"issue\": \"{{ $json.issue }}\", \"category\": \"{{ $json.category }}\", \"priority\": \"{{ $json.priority }}\", \"assigned_team\": \"{{ $json.assigned_team }}\", \"execution_id\": \"{{ $execution.id }}\"}"
+      }
+    },
+    {
+      "id": "error_handler",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [400, 500],
+      "parameters": {
+        "options": {},
+        "responseCode": 401,
+        "responseData": "{\"error\": \"Unauthorized - invalid webhook secret\"}"
+      }
+    }
+  ],
+  "connections": {
+    "webhook_trigger": {
+      "main": [
+        [
+          {
+            "node": "validate_secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "validate_secret": {
+      "main": [
+        [
+          {
+            "node": "extract_fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "error_handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extract_fields": {
+      "main": [
+        [
+          {
+            "node": "ai_agent_extract_metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai_agent_extract_metadata": {
+      "main": [
+        [
+          {
+            "node": "parse_ai_response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse_ai_response": {
+      "main": [
+        [
+          {
+            "node": "generate_ticket_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "generate_ticket_id": {
+      "main": [
+        [
+          {
+            "node": "store_in_postgresql",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store_in_postgresql": {
+      "main": [
+        [
+          {
+            "node": "send_gmail_confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "send_gmail_confirmation": {
+      "main": [
+        [
+          {
+            "node": "prepare_response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare_response": {
+      "main": [
+        [
+          {
+            "node": "respond_to_webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "errorWorkflow": "",
+    "timezone": "UTC"
+  }
+}

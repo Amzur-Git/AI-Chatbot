@@ -13,6 +13,7 @@ engine = create_async_engine(
     database_url,
     echo=True,
     poolclass=NullPool,
+    connect_args={"statement_cache_size": 0},
 )
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

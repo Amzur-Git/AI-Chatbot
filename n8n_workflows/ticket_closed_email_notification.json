@@ -1,0 +1,168 @@
+{
+  "name": "Ticket Closed Email Notification",
+  "description": "Receives closed ticket webhook from FastAPI and sends Gmail notification",
+  "nodes": [
+    {
+      "id": "webhook_trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 260],
+      "parameters": {
+        "path": "ticket-closed-notification",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {}
+    },
+    {
+      "id": "validate_secret",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [420, 260],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $headers['x-webhook-secret'] }}",
+              "operation": "equals",
+              "value2": "{{ env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "normalize_payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [640, 260],
+      "parameters": {
+        "options": {},
+        "assignments": {
+          "assignments": [
+            {
+              "name": "event_type",
+              "value": "={{ $json.event_type || 'ticket_closed' }}"
+            },
+            {
+              "name": "ticket_id",
+              "value": "={{ $json.ticket_id }}"
+            },
+            {
+              "name": "user_email",
+              "value": "={{ $json.user_email }}"
+            },
+            {
+              "name": "user_name",
+              "value": "={{ $json.user_name || 'User' }}"
+            },
+            {
+              "name": "issue",
+              "value": "={{ $json.issue || '' }}"
+            },
+            {
+              "name": "status",
+              "value": "={{ $json.status || 'closed' }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "send_gmail_notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [860, 260],
+      "parameters": {
+        "operation": "send",
+        "to": "={{ $json.user_email }}",
+        "subject": "Ticket Closed: TKT-{{ $json.ticket_id }}",
+        "bodyFormat": "html",
+        "body": "<h2>Ticket Closed</h2>\n<p>Hi {{ $json.user_name }},</p>\n<p>Your ticket has been marked as <strong>CLOSED</strong>.</p>\n<div style=\"background:#f5f5f5;padding:12px;border-radius:6px;margin:16px 0;\">\n  <p><strong>Ticket ID:</strong> TKT-{{ $json.ticket_id }}</p>\n  <p><strong>Status:</strong> {{ $json.status }}</p>\n  <p><strong>Issue:</strong> {{ $json.issue }}</p>\n</div>\n<p>If this closure is unexpected, please reply to this email or create a new ticket.</p>\n<p>Regards,<br/>Support Team</p>"
+      },
+      "credentials": {
+        "gmail": "gmail_cred"
+      }
+    },
+    {
+      "id": "respond_success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1080, 260],
+      "parameters": {
+        "responseCode": 200,
+        "responseData": "={\"ok\": true, \"message\": \"closed-ticket email sent\", \"ticket_id\": \"{{ $json.ticket_id }}\"}",
+        "options": {}
+      }
+    },
+    {
+      "id": "respond_unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [640, 420],
+      "parameters": {
+        "responseCode": 401,
+        "responseData": "={\"ok\": false, \"error\": \"Unauthorized webhook secret\"}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "webhook_trigger": {
+      "main": [
+        [
+          {
+            "node": "validate_secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "validate_secret": {
+      "main": [
+        [
+          {
+            "node": "normalize_payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "respond_unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "normalize_payload": {
+      "main": [
+        [
+          {
+            "node": "send_gmail_notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "send_gmail_notification": {
+      "main": [
+        [
+          {
+            "node": "respond_success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

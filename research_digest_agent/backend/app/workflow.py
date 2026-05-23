@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
-from .arxiv_service import search_arxiv
-from .llm import get_chat_llm
-from .models import PaperSummary, QueryPlan, ResearchState, SufficiencyDecision
+from .models import PaperSummary, ResearchState
+import mcp_client
 
 
 def _topic_keywords(topic: str) -> set[str]:
@@ -35,30 +32,12 @@ def _merge_unique(existing: list[dict], incoming: list[dict]) -> list[dict]:
 
 
 async def generate_query(state: ResearchState) -> dict:
-    llm = get_chat_llm(temperature=0)
-    structured = llm.with_structured_output(QueryPlan)
-
     seen_titles = [p["title"] for p in state["collected_papers"]][:12]
-    prompt = (
-        f"Topic: {state['topic']}\n"
-        f"Iteration: {state['iteration']}\n"
-        f"Already found paper titles: {json.dumps(seen_titles)}\n"
-        "Generate a concise arXiv-friendly search query (3-8 keywords)."
+    query = await mcp_client.generate_query_from_titles(
+        topic=state["topic"],
+        iteration=state["iteration"],
+        collected_titles=seen_titles,
     )
-
-    result = await structured.ainvoke(
-        [
-            SystemMessage(
-                content=(
-                    "You are an expert research librarian. Generate a search query for arXiv. "
-                    "Use plain keywords only. No boolean operators, no quotes, no field prefixes."
-                )
-            ),
-            HumanMessage(content=prompt),
-        ]
-    )
-
-    query = result.query.strip() if result.query else state["topic"]
     if not query:
         query = state["topic"]
 
@@ -66,7 +45,7 @@ async def generate_query(state: ResearchState) -> dict:
 
 
 async def search_papers(state: ResearchState) -> dict:
-    papers = await search_arxiv(state["query"], max_results=8)
+    papers = await mcp_client.search_papers(state["query"], max_results=8)
     return {"candidate_papers": [paper.to_dict() for paper in papers]}
 
 
@@ -93,7 +72,6 @@ async def filter_papers(state: ResearchState) -> dict:
 
 
 async def summarize_papers(state: ResearchState) -> dict:
-    llm = get_chat_llm(temperature=0.2)
     existing_ids = {item["arxiv_id"] for item in state["paper_summaries"]}
     new_summaries: list[dict] = []
 
@@ -101,31 +79,17 @@ async def summarize_papers(state: ResearchState) -> dict:
         if paper["arxiv_id"] in existing_ids:
             continue
 
-        response = await llm.ainvoke(
-            [
-                SystemMessage(
-                    content=(
-                        "Summarize the paper for a research digest. "
-                        "Return 2-3 concise sentences focused on methods and findings."
-                    )
-                ),
-                HumanMessage(
-                    content=(
-                        f"Topic: {state['topic']}\n"
-                        f"Title: {paper['title']}\n"
-                        f"Abstract: {paper['abstract']}"
-                    )
-                ),
-            ]
+        content = await mcp_client.summarize_paper(
+            topic=state["topic"],
+            title=paper["title"],
+            abstract=paper["abstract"],
         )
-
-        content = response.content if isinstance(response.content, str) else str(response.content)
         score = _relevance_score(state["topic"], f"{paper['title']} {paper['abstract']}")
 
         summary = PaperSummary(
             arxiv_id=paper["arxiv_id"],
             title=paper["title"],
-            summary=content.strip(),
+            summary=content.strip() or "Summary unavailable due to MCP tool failure.",
             relevance_score=score,
         )
         new_summaries.append(summary.model_dump())
@@ -134,44 +98,14 @@ async def summarize_papers(state: ResearchState) -> dict:
 
 
 async def evaluate_sufficiency(state: ResearchState) -> dict:
-    if len(state["paper_summaries"]) < 3:
-        return {
-            "sufficient": False,
-            "sufficiency_reason": "Need at least 3 relevant summarized papers.",
-            "missing_information": "Insufficient paper coverage across methods/findings.",
-        }
-
-    llm = get_chat_llm(temperature=0)
-    structured = llm.with_structured_output(SufficiencyDecision)
-
-    snippet = "\n".join(
-        f"- {item['title']}: {item['summary'][:220]}"
-        for item in state["paper_summaries"][:10]
+    result = await mcp_client.evaluate_sufficiency_from_summaries(
+        topic=state["topic"],
+        paper_summaries=state["paper_summaries"],
     )
-
-    result = await structured.ainvoke(
-        [
-            SystemMessage(
-                content=(
-                    "You are a research quality evaluator. Decide whether evidence is enough "
-                    "to produce a high-quality digest."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    f"Topic: {state['topic']}\n"
-                    f"Iteration: {state['iteration']} / {state['max_iterations']}\n"
-                    f"Summaries:\n{snippet}\n\n"
-                    "Return: sufficient, reason, missing_information."
-                )
-            ),
-        ]
-    )
-
     return {
-        "sufficient": bool(result.sufficient),
-        "sufficiency_reason": result.reason,
-        "missing_information": result.missing_information,
+        "sufficient": bool(result.get("sufficient", False)),
+        "sufficiency_reason": str(result.get("reason", "")),
+        "missing_information": str(result.get("missing_information", "")),
     }
 
 

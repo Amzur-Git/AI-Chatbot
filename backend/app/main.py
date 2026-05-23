@@ -7,6 +7,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from .routes import auth, chat
 
 try:
+    from .routes import tickets
+    TICKETS_AVAILABLE = True
+except ImportError:
+    tickets = None
+    TICKETS_AVAILABLE = False
+    logging.getLogger(__name__).warning("Ticket routes not available")
+
+try:
     from .routes import uploads
     from .routes.uploads import cleanup_stale_unlinked_uploads
     UPLOADS_AVAILABLE = True
@@ -83,6 +91,8 @@ app.add_middleware(
 # Include routers
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
+if TICKETS_AVAILABLE:
+    app.include_router(tickets.router, prefix="/api", tags=["tickets"])
 if UPLOADS_AVAILABLE:
     app.include_router(uploads.router, prefix="/api", tags=["uploads"])
 

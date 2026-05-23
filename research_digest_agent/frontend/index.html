@@ -48,7 +48,14 @@
     <h1 class="text-lg font-bold text-[#cdd6f4]">Research Digest Agent</h1>
     <p class="text-xs text-[#6c7086]">Autonomous arXiv research · ReAct loop · Real-time streaming</p>
   </div>
-  <div id="status-badge" class="ml-auto hidden items-center gap-2 text-xs px-3 py-1 rounded-full bg-[#313244]">
+  <button
+    id="back-btn"
+    onclick="goBack()"
+    class="ml-auto text-xs px-3 py-1 rounded-full border border-[#313244] text-[#cdd6f4] hover:border-[#89b4fa] hover:text-[#89b4fa] transition-colors"
+  >
+    ← Back
+  </button>
+  <div id="status-badge" class="hidden items-center gap-2 text-xs px-3 py-1 rounded-full bg-[#313244]">
     <span class="pulse-dot w-2 h-2 rounded-full bg-[#a6e3a1]"></span>
     <span id="status-text">Running…</span>
   </div>
@@ -66,6 +73,7 @@
       <textarea
         id="topic-input"
         rows="3"
+        autocomplete="off"
         placeholder="e.g. Large Language Models for code generation&#10;e.g. Diffusion models in drug discovery"
         class="w-full bg-[#1e1e2e] border border-[#313244] rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:border-[#89b4fa] placeholder-[#585b70]"
       ></textarea>
@@ -171,7 +179,7 @@
 
 <!-- ─────────────────────── SCRIPT ─────────────────────── -->
 <script>
-  const API_BASE = "http://127.0.0.1:8010";
+  const API_BASE = "http://localhost:8010";
   let currentTopic = "";
   let digestMarkdown = "";
   let digestRaw = "";
@@ -180,6 +188,22 @@
 
   // ── DOM helpers ─────────────────────────────────────────────
   const $ = id => document.getElementById(id);
+
+  function goBack() {
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    window.location.href = "/";
+  }
+
+  // Always clear topic text after load/reload.
+  window.addEventListener("pageshow", () => {
+    const topicInput = $("topic-input");
+    if (topicInput) {
+      topicInput.value = "";
+    }
+  });
 
   function setTopic(text) {
     $("topic-input").value = text;
@@ -292,7 +316,8 @@
       }
       read();
     }).catch(err => {
-      log(`${ts()}Connection failed: ${escapeHtml(String(err))}`, "error");
+      log(`${ts()}Connection failed to ${escapeHtml(API_BASE)}: ${escapeHtml(String(err))}`, "error");
+      log(`${ts()}Tip: start the backend from research_digest_agent/backend/start.ps1`, "muted");
       onStreamDone(true);
     });
   }

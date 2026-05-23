@@ -38,7 +38,7 @@ app.add_middleware(
 
 
 def _sse_line(event_dict: dict) -> str:
-    return f"data: {json.dumps(event_dict)}\\n\\n"
+    return f"data: {json.dumps(event_dict)}\n\n"
 
 
 @app.get("/health")

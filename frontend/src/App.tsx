@@ -9,6 +9,8 @@ import ImageGenerationLoading from "./components/ImageGenerationLoading";
 import Login from "./components/Login";
 import ResearchDigest from "./pages/ResearchDigest";
 import TicTacToe from "./pages/TicTacToe";
+import Tickets from "./pages/Tickets";
+import TicketDetailPage from "./pages/TicketDetail";
 import MessageContent from "./components/MessageContent";
 import RagDebugPanel from "./components/RagDebugPanel";
 import { authService } from "./services/auth";
@@ -855,6 +857,14 @@ function ChatApp() {
             >
               Spreadsheet
             </button>
+            <button
+              onClick={() => {
+                window.open(`${window.location.origin}/tickets`, "_blank", "noopener,noreferrer");
+              }}
+              className="w-full mb-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold py-2 px-3 transition text-left"
+            >
+              Tickets
+            </button>
 
             <RagDebugPanel
               data={ragDebug}
@@ -1631,6 +1641,14 @@ function App() {
         <Route
           path="/tic-tac-toe"
           element={isAuthenticated ? <TicTacToe /> : <Navigate to="/login" replace />}
+        />
+        <Route
+          path="/tickets"
+          element={isAuthenticated ? <Tickets /> : <Navigate to="/login" replace />}
+        />
+        <Route
+          path="/tickets/:ticketId"
+          element={isAuthenticated ? <TicketDetailPage /> : <Navigate to="/login" replace />}
         />
       </Routes>
     </Router>

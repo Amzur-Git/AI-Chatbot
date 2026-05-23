@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -106,3 +106,19 @@ class UserCredential(Base):
 	updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 	user = relationship("User", back_populates="credentials")
+
+
+class Ticket(Base):
+	__tablename__ = "tickets"
+
+	ticket_id = Column(BigInteger, primary_key=True, index=True)
+	user_email = Column(Text, nullable=False, index=True)
+	issue = Column(Text, nullable=False)
+	category = Column(String, nullable=False)
+	priority = Column(String, nullable=False)
+	summary = Column(Text, nullable=True)
+	response = Column(Text, nullable=True)
+	assigned_team = Column(String, nullable=True)
+	status = Column(String, nullable=False, default="open", index=True)
+	created_at = Column(DateTime, default=datetime.utcnow)
+	updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

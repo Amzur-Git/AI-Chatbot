@@ -1,0 +1,241 @@
+{
+  "name": "AI Ticket Management (Create + Close)",
+  "description": "Unified webhook workflow for ticket creation and ticket closure with Gemini AI, Supabase, and Gmail",
+  "nodes": [
+    {
+      "id": "webhook_trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [120, 280],
+      "parameters": {
+        "path": "ticket-management",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate_secret",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [320, 280],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $headers['x-webhook-secret'] }}",
+              "operation": "equals",
+              "value2": "{{ env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "if_action_close",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [520, 280],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ ($json.action || '').toLowerCase() }}",
+              "operation": "equals",
+              "value2": "close"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "normalize_create_payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [740, 150],
+      "parameters": {
+        "mode": "json",
+        "jsonOutput": "={\n  \"action\": \"create\",\n  \"user_email\": $json.user_email,\n  \"user_name\": $json.user_name || \"User\",\n  \"request_id\": $json.request_id || `req-${Date.now()}`,\n  \"issue\": $json.issue || $json.message,\n  \"message\": $json.message || $json.issue\n}"
+      }
+    },
+    {
+      "id": "gemini_analyze_issue",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [960, 150],
+      "parameters": {
+        "promptType": "define",
+        "text": "Analyze this support issue and return ONLY valid JSON with keys: category, priority, summary, response, assigned_team.\\nIssue: {{$json.issue}}\\nRules: login/payment/production-down => High; feature/performance => Medium; inquiries/cosmetic => Low."
+      }
+    },
+    {
+      "id": "insert_ticket_supabase",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1160, 150],
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "tickets",
+        "columns": "user_email,issue,category,priority,summary,response,status,assigned_team,created_at",
+        "data": "={\n  \"user_email\": $json.user_email,\n  \"issue\": $json.issue,\n  \"category\": $json.category || $json.output?.category || \"support\",\n  \"priority\": $json.priority || $json.output?.priority || \"medium\",\n  \"summary\": $json.summary || $json.output?.summary || \"\",\n  \"response\": $json.response || $json.output?.response || \"\",\n  \"status\": \"Open\",\n  \"assigned_team\": $json.assigned_team || $json.output?.assigned_team || \"support\",\n  \"created_at\": \"={{ now() }}\"\n}"
+      }
+    },
+    {
+      "id": "send_create_email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1360, 150],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "to": "={{$json.user_email}}",
+        "subject": "Ticket Created Successfully",
+        "emailType": "html",
+        "message": "Hello,<br/><br/>Your support ticket has been created successfully.<br/><br/><b>Ticket ID:</b> {{$json.ticket_id || $json.id}}<br/><b>Category:</b> {{$json.category || $json.output?.category}}<br/><b>Priority:</b> {{$json.priority || $json.output?.priority}}<br/><b>Status:</b> Open<br/><br/>Thanks,<br/>Support Team"
+      }
+    },
+    {
+      "id": "create_response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1560, 150],
+      "parameters": {
+        "mode": "json",
+        "jsonOutput": "={\n  \"success\": true,\n  \"action\": \"create\",\n  \"ticket_id\": $json.ticket_id || $json.id,\n  \"issue\": $json.issue,\n  \"category\": $json.category || $json.output?.category,\n  \"priority\": $json.priority || $json.output?.priority,\n  \"summary\": $json.summary || $json.output?.summary || \"\",\n  \"response\": $json.response || $json.output?.response || \"\",\n  \"status\": \"Open\",\n  \"assigned_team\": $json.assigned_team || $json.output?.assigned_team || \"support\"\n}"
+      }
+    },
+    {
+      "id": "normalize_close_payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [740, 420],
+      "parameters": {
+        "mode": "json",
+        "jsonOutput": "={\n  \"action\": \"close\",\n  \"ticket_id\": Number($json.ticket_id),\n  \"user_email\": $json.user_email || \"\",\n  \"user_name\": $json.user_name || \"User\"\n}"
+      }
+    },
+    {
+      "id": "select_ticket",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [960, 420],
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "tickets",
+        "where": "ticket_id = {{$json.ticket_id}}",
+        "limit": 1
+      }
+    },
+    {
+      "id": "update_ticket_closed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1160, 420],
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "tickets",
+        "updateKey": "ticket_id",
+        "columns": "ticket_id,status,updated_at",
+        "data": "={\n  \"ticket_id\": $json.ticket_id,\n  \"status\": \"Closed\",\n  \"updated_at\": \"={{ now() }}\"\n}"
+      }
+    },
+    {
+      "id": "send_close_email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1360, 420],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "to": "={{$json.user_email}}",
+        "subject": "Ticket Closed Successfully",
+        "emailType": "html",
+        "message": "Hello,<br/><br/>Your support ticket has been closed successfully.<br/><br/><b>Ticket ID:</b> {{$json.ticket_id}}<br/><b>Status:</b> Closed<br/><br/>Thanks,<br/>Support Team"
+      }
+    },
+    {
+      "id": "close_response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1560, 420],
+      "parameters": {
+        "mode": "json",
+        "jsonOutput": "={\n  \"success\": true,\n  \"action\": \"close\",\n  \"ticket_id\": $json.ticket_id,\n  \"status\": \"Closed\"\n}"
+      }
+    },
+    {
+      "id": "respond_success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1760, 280],
+      "parameters": {
+        "responseCode": 200,
+        "responseData": "={{$json}}"
+      }
+    },
+    {
+      "id": "respond_unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [520, 520],
+      "parameters": {
+        "responseCode": 401,
+        "responseData": "={\"success\": false, \"error\": \"Unauthorized webhook secret\"}"
+      }
+    }
+  ],
+  "connections": {
+    "webhook_trigger": {
+      "main": [[{ "node": "validate_secret", "type": "main", "index": 0 }]]
+    },
+    "validate_secret": {
+      "main": [
+        [{ "node": "if_action_close", "type": "main", "index": 0 }],
+        [{ "node": "respond_unauthorized", "type": "main", "index": 0 }]
+      ]
+    },
+    "if_action_close": {
+      "main": [
+        [{ "node": "normalize_close_payload", "type": "main", "index": 0 }],
+        [{ "node": "normalize_create_payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "normalize_create_payload": {
+      "main": [[{ "node": "gemini_analyze_issue", "type": "main", "index": 0 }]]
+    },
+    "gemini_analyze_issue": {
+      "main": [[{ "node": "insert_ticket_supabase", "type": "main", "index": 0 }]]
+    },
+    "insert_ticket_supabase": {
+      "main": [[{ "node": "send_create_email", "type": "main", "index": 0 }]]
+    },
+    "send_create_email": {
+      "main": [[{ "node": "create_response", "type": "main", "index": 0 }]]
+    },
+    "create_response": {
+      "main": [[{ "node": "respond_success", "type": "main", "index": 0 }]]
+    },
+    "normalize_close_payload": {
+      "main": [[{ "node": "select_ticket", "type": "main", "index": 0 }]]
+    },
+    "select_ticket": {
+      "main": [[{ "node": "update_ticket_closed", "type": "main", "index": 0 }]]
+    },
+    "update_ticket_closed": {
+      "main": [[{ "node": "send_close_email", "type": "main", "index": 0 }]]
+    },
+    "send_close_email": {
+      "main": [[{ "node": "close_response", "type": "main", "index": 0 }]]
+    },
+    "close_response": {
+      "main": [[{ "node": "respond_success", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

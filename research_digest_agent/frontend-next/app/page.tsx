@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import EventBadge from "../components/EventBadge";
 import type { AgentEvent, Paper } from "../lib/types";
 
@@ -43,7 +44,8 @@ function parseSseChunk(raw: string): AgentEvent[] {
 }
 
 export default function HomePage() {
-  const [topic, setTopic] = useState("Retrieval Augmented Generation");
+  const router = useRouter();
+  const [topic, setTopic] = useState("");
   const [running, setRunning] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -98,38 +100,45 @@ export default function HomePage() {
     setDigest("");
     setError(null);
 
-    const response = await fetch(`${API_BASE}/api/research`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: topic.trim() }),
-    });
+    try {
+      const response = await fetch(`${API_BASE}/api/research`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic: topic.trim() }),
+      });
 
-    if (!response.ok || !response.body) {
-      setError(`Request failed with status ${response.status}`);
-      setRunning(false);
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+      if (!response.ok || !response.body) {
+        setError(`Request failed with status ${response.status}`);
+        setRunning(false);
+        return;
       }
 
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      for (const part of parts) {
-        const parsed = parseSseChunk(`${part}\n\n`);
-        for (const evt of parsed) {
-          pushEvent(evt);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+
+        for (const part of parts) {
+          const parsed = parseSseChunk(`${part}\n\n`);
+          for (const evt of parsed) {
+            pushEvent(evt);
+          }
         }
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Unable to reach backend at ${API_BASE}. ${message}`);
+    } finally {
+      setRunning(false);
     }
   };
 
@@ -149,7 +158,16 @@ export default function HomePage() {
             LangGraph workflow that searches arXiv, summarizes papers with AI, and streams live reasoning.
           </p>
         </div>
-        <EventBadge label={statusText} tone={running ? "info" : "muted"} />
+        <div className="flex items-center gap-3">
+          <EventBadge label={statusText} tone={running ? "info" : "muted"} />
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-900"
+          >
+            <span aria-hidden="true">&larr;</span> Back
+          </button>
+        </div>
       </div>
 
       <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">

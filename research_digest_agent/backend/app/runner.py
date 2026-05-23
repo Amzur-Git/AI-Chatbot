@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 from typing import AsyncGenerator
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from .llm import get_chat_llm
+import mcp_client
 from .models import ResearchState
 from .workflow import build_workflow
 
@@ -17,36 +14,9 @@ def _apply_update(state: dict, update: dict) -> dict:
 
 
 async def _stream_final_digest(topic: str, paper_summaries: list[dict]) -> AsyncGenerator[str, None]:
-    llm = get_chat_llm(temperature=0.2)
-
-    summaries_text = "\n\n".join(
-        f"Title: {item['title']}\nSummary: {item['summary']}"
-        for item in paper_summaries[:12]
-    )
-
-    prompt = (
-        f"Research topic: {topic}\n\n"
-        f"Paper summaries:\n{summaries_text}\n\n"
-        "Write a structured markdown research digest with these exact sections:\n"
-        "## Overview\n"
-        "## Key findings\n"
-        "## Important papers\n"
-        "## Trends\n"
-        "## Limitations\n"
-        "## Future research directions\n"
-        "## References\n"
-        "For references, include paper titles as a numbered list."
-    )
-
-    async for chunk in llm.astream(
-        [
-            SystemMessage(content="You are a senior research analyst writing concise, accurate digests."),
-            HumanMessage(content=prompt),
-        ]
-    ):
-        text = chunk.content if isinstance(chunk.content, str) else ""
-        if text:
-            yield text
+    async for chunk in mcp_client.stream_digest_from_summaries(topic, paper_summaries):
+        if chunk:
+            yield chunk
 
 
 async def run_research_agent(topic: str, max_iterations: int = 4) -> AsyncGenerator[dict, None]:
